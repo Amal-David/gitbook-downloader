@@ -27,6 +27,9 @@ app = Flask(__name__)
 active_downloads = {}
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
 
+# Ensure downloads directory exists
+os.makedirs('downloads', exist_ok=True)
+
 @app.errorhandler(404)
 def not_found_error(error):
     logger.error("Resource not found")
