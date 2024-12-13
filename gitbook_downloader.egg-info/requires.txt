@@ -1,5 +1,0 @@
-flask
-beautifulsoup4
-aiohttp
-markdownify
-python-slugify
