@@ -1,15 +1,31 @@
-# Gitbook Documentation Downloader
+# Documentation Downloader
 
-A web application that allows you to download and convert Gitbook documentation into markdown format.
+A powerful web application that downloads and converts online documentation into markdown format, supporting multiple documentation platforms.
+
+## Supported Platforms
+
+- GitBook
+- Docusaurus
+- ReadMe.com
+- MkDocs
+- Sphinx
+
+The application automatically detects the documentation platform and uses the appropriate scraper.
 
 ## Features
 
-- Scrape Gitbook documentation sites
-- Convert HTML content to markdown format
-- View converted content in browser
-- Download documentation as a single markdown file
-- Handles internal links and navigation
-- Preserves document structure
+- Multi-platform documentation support with automatic detection
+- Asynchronous downloading for improved performance
+- Real-time progress tracking
+- Clean markdown conversion with preserved formatting
+- Interactive web interface with:
+  - Submit and Download buttons
+  - Real-time progress updates
+  - Detailed download metrics
+  - Copy to clipboard functionality
+- Handles rate limiting and retries
+- Preserves document structure and navigation
+- Support for internal links and cross-references
 
 ## Installation
 
@@ -26,22 +42,52 @@ pip install -r requirements.txt
 python app.py
 ```
 
-2. Open your browser and navigate to `http://localhost:5000`
+2. Open your browser and navigate to `http://localhost:8082`
 
-3. Enter the URL of a Gitbook documentation site
+3. Enter the URL of any supported documentation site
 
-4. Choose to either:
+4. Click "Submit" to start the download process
+
+5. Monitor real-time progress and metrics
+
+6. When complete, you can:
    - View the converted content in your browser
-   - Download the content as a markdown file
+   - Copy content to clipboard
+   - Download as a markdown file
 
 ## Technical Details
 
-The application uses:
+### Architecture
 - Flask for the web interface
 - BeautifulSoup4 for HTML parsing
-- Requests for fetching web content
-- Python-slugify for URL/filename handling
+- Async support with aiohttp for concurrent downloads
+- Object-oriented design with platform-specific scrapers
+- Factory pattern for scraper selection
+
+### Key Components
+- Platform-specific scraper classes
+- Async download manager
+- Progress tracking system
+- Markdown conversion pipeline
+- Real-time metrics collection
+
+### Metrics Tracked
+- Total pages processed
+- Successful downloads
+- Failed attempts
+- Retry counts
+- Download duration
+- Average time per page
+- Total content size
+
+## Contributing
+
+Feel free to contribute by:
+1. Adding support for new documentation platforms
+2. Improving existing scrapers
+3. Enhancing the UI/UX
+4. Adding new features
 
 ## Note
 
-This tool is designed for Gitbook-based documentation sites. It may not work correctly with other documentation platforms.
+While the tool works best with the supported platforms (GitBook, Docusaurus, ReadMe.com, MkDocs, Sphinx), it includes fallback mechanisms for handling other documentation sites. The application automatically selects the most appropriate scraper based on the site's structure and characteristics.

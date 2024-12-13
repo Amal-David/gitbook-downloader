@@ -10,7 +10,20 @@ venv/
 
 # Downloads folder
 downloads/
+gitbook_downloader.egg-info/
 
 # Markdown files except README
 *.md
 !README.md
+# Ignore egg-info folders
+*.egg-info/
+
+# Other common ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.env
+*.log
+*.sqlite3
