@@ -1,0 +1,8 @@
+Metadata-Version: 2.1
+Name: gitbook-downloader
+Version: 0.1
+Requires-Dist: flask
+Requires-Dist: beautifulsoup4
+Requires-Dist: aiohttp
+Requires-Dist: markdownify
+Requires-Dist: python-slugify
