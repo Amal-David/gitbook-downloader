@@ -6,6 +6,7 @@ from .docusaurus_scraper import DocusaurusScraper
 from .readme_scraper import ReadmeScraper
 from .mkdocs_scraper import MkDocsScraper
 from .sphinx_scraper import SphinxScraper
+from .mintlify_scraper import MintlifyScraper # Added import
 from urllib.parse import urlparse
 
 class ScraperFactory:
@@ -16,7 +17,8 @@ class ScraperFactory:
         DocusaurusScraper,
         ReadmeScraper,
         MkDocsScraper,
-        SphinxScraper
+        SphinxScraper,
+        MintlifyScraper # Added to list
     ]
     
     @classmethod
@@ -28,8 +30,8 @@ class ScraperFactory:
             if scraper_class.can_handle(soup, domain):
                 return scraper_class(soup, url)
         
-        # Default to GitBook if no other scraper matches
-        return GitbookScraper(soup, url)
+        # If no specific scraper matches, return None
+        return None
 
     @classmethod
     def get_supported_platforms(cls) -> list[str]:
