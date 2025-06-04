@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "gitbook-downloader"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [{include = "gitbook_downloader"}]
+
+[tool.poetry.dependencies]
+python = "3.13"
+requests = "^2.32.3"
+beautifulsoup4 = "^4.13.4"
+markdown = "^3.8"
+python-slugify = "^8.0.4"
+markdownify = "^1.1.0"
+click = "^8.2.1"
+aiohttp = "^3.12.8"
+flask = "^3.1.1"
+aiofiles = "^24.1.0"
+asyncio = "^3.4.3"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

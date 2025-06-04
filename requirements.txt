@@ -1,9 +1,0 @@
-requests==2.31.0
-beautifulsoup4==4.12.2
-markdown==3.5
-flask==3.0.0
-python-slugify==8.0.1
-markdownify==0.11.6
-aiohttp==3.9.3
-asyncio==3.4.3
-aiofiles==23.2.1
