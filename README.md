@@ -1,6 +1,6 @@
 # Gitbook Documentation Downloader for LLMs
 
-A web application that converts Gitbook documentation into markdown format, optimized for use with Large Language Models (LLMs) like ChatGPT, Claude, and LLaMA. Checkout [docingest](https://docingest.com) for a hosted version of this with support for multiple other documentation providers like readthedocs, mintlify, docusaurus, etc
+A web application that converts Gitbook documentation into markdown format, optimized for use with Large Language Models (LLMs) like ChatGPT, Claude, and LLaMA. Checkout [docingest](https://docingest.com) for a comprehensive version which supports multiple other documentation providers like readthedocs, mintlify, docusaurus, etc. However this maybe still better for gitbook specific sites.
 
 ## Purpose
 
