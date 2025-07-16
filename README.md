@@ -23,17 +23,18 @@ A web application that converts Gitbook documentation into markdown format, opti
 1. Clone this repository
 2. Install dependencies:
 ```bash
-pip install -r requirements.txt
+poetry install
 ```
 
 ## Usage
 
+### Using Web Interface
 1. Start the web server:
 ```bash
-python app.py
+poetry run python app.py
 ```
 
-2. Open your browser and navigate to `http://localhost:5000`
+2. Open your browser and navigate to `http://localhost:8080`
 
 3. Enter the URL of a Gitbook documentation site
 
@@ -46,6 +47,13 @@ python app.py
    - Claude (upload as a file)
    - Custom LLaMA models (include in training data)
    - Any other LLM that accepts markdown input
+
+### Using CLI Tool
+
+You can use CLI to download the documentation as well:
+```bash
+poetry run python cli.py download <gitbook_url> --output <output_file.md>
+```
 
 ## Technical Details
 
