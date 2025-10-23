@@ -84,9 +84,10 @@ class DownloadStatus:
 
 
 class GitbookDownloader:
-    def __init__(self, url, recursive: bool):
+    def __init__(self, url, recursive: bool, native_md: bool):
         self.base_url = url.rstrip("/")
         self.recursive = recursive
+        self.native_md = native_md
         self.status = DownloadStatus()
         self.session = None
         self.visited_urls = set()
@@ -141,7 +142,7 @@ class GitbookDownloader:
             raise
 
     async def _follow_nav_links(self, nav_links, page_index):
-        for link in nav_links:
+        for link, title in nav_links:
             try:
                 # Skip if URL already processed
                 if link in self.visited_urls:
@@ -156,7 +157,11 @@ class GitbookDownloader:
                 content = await self._fetch_page(link)
                 self.visited_urls.add(link)
                 if content:
-                    page_data = await self._process_page_content(link, content)
+                    if self.native_md:
+                        md_text = await self._fetch_page(f"{link}.md")
+                        page_data = {"title": title, "content": md_text, "url": link}
+                    else:
+                        page_data = await self._process_page_content(link, content)
                     if page_data:
                         # Check for duplicate content
                         content_hash = hash(page_data["content"])
@@ -340,7 +345,7 @@ class GitbookDownloader:
 
                             # Skip duplicate URLs and fragments
                             if full_url not in processed_urls:
-                                nav_links.append(full_url)
+                                nav_links.append((full_url, link.get_text()))
                                 processed_urls.add(full_url)
 
             # Also check for next/prev navigation links
@@ -359,7 +364,7 @@ class GitbookDownloader:
                         continue
 
                     if full_url not in processed_urls and not href.startswith("#"):
-                        nav_links.append(full_url)
+                        nav_links.append((full_url, link.get_text()))
                         processed_urls.add(full_url)
 
             # Remove duplicates while preserving order
