@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 
 # Virtual environment
+.python-version
 venv/
 
 # Downloads folder
@@ -14,3 +15,6 @@ downloads/
 # Markdown files except README
 *.md
 !README.md
+
+# IDE
+.vscode/
