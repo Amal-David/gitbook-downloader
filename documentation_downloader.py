@@ -10,6 +10,7 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 import markdownify
 from slugify import slugify
+import re
 
 # Assuming PageContent is in scrapers.base_scraper
 # We will need to adjust this if it's moved or structured differently later
@@ -439,67 +440,9 @@ class DocumentationDownloader:
         md = re.sub(r'\n{3,}', '\n\n', md).strip() # Remove excessive newlines
         return md
 
-```
-
+"""
 **Note on `_html_to_markdown`**:
 The `PageContent.content` returned by `scraper_instance.extract_page_data` is *already expected to be markdown* as per the prompt for the `BaseScraper` changes later ("`PageContent` would include title, `markdown_content`, order, section etc.").
 So, the `DocumentationDownloader` should not call `_html_to_markdown` itself on `page_content_obj.content`.
 If `extract_page_data` in a specific scraper implementation returns HTML that needs conversion, that scraper's `extract_page_data` method should handle the conversion to Markdown before populating the `PageContent.content` field.
-I've included `_html_to_markdown` as a utility method for now, but the main `download` loop assumes `page_content_obj.content` is already markdown.
-
-I'll remove the direct call to `_html_to_markdown` from the `download` method logic as the scraper should provide markdown.
-The `extract_page_data` method of the scraper should be responsible for converting the relevant HTML part to Markdown and storing it in `PageContent.content`.
-
-The `DocumentationDownloader._generate_markdown` method will then just use `page_content_obj.content` directly.
-The `BaseScraper`'s `extract_page_data` method will be the one calling a (possibly shared or its own) HTML-to-Markdown conversion utility.
-
-Final check on `download` method logic:
-- The `scraper_instance` is initialized by `ScraperFactory` with the `soup` of the `base_url`.
-- `scraper_instance.extract_navigation_links()` uses this initial `soup` to find navigation URLs.
-- For each `link_url` from navigation:
-    - `DocumentationDownloader` fetches the HTML content (`page_html_content`).
-    - Creates `page_soup` from `page_html_content`.
-    - Calls `scraper_instance.extract_page_data(page_soup, link_url)`. This method within the scraper will:
-        - Extract title.
-        - Identify main content element from `page_soup`.
-        - Clean it.
-        - Process special elements.
-        - Convert the *cleaned main content HTML* to Markdown.
-        - Return a `PageContent` object where `PageContent.content` is the *Markdown string*.
-- `DocumentationDownloader` stores these `PageContent` objects.
-- `DocumentationDownloader._generate_markdown` uses the `PageContent.content` (which is Markdown) to build the final document.
-
-This seems correct and aligns with the division of responsibilities.Okay, I've created the `documentation_downloader.py` file with the `DownloadStatus` class, `timeout` context manager, and the `DocumentationDownloader` class.
-
-Here's a summary of what I've done:
-1.  **Created `documentation_downloader.py`**:
-    *   Moved `DownloadStatus` and `timeout` from `gitbook_downloader.py`.
-    *   Added necessary imports: `asyncio`, `aiohttp`, `logging`, `time`, `BeautifulSoup`, `markdownify`, `slugify`, and importantly `BaseScraper`, `PageContent` from `scrapers.base_scraper`.
-2.  **Implemented `DocumentationDownloader.__init__`**:
-    *   Stores `base_url` and `scraper_instance`.
-    *   Initializes `status`, `session`, `output_file`, `visited_urls`, `delay`, `max_retries`, `retry_delay`, `pages`, and `content_hash`.
-3.  **Implemented `DocumentationDownloader._fetch_page`**:
-    *   This is an `async` method, largely similar to the one in `GitbookDownloader` but adapted for the new class structure. It handles retries, rate limiting (with `Retry-After` header), and basic error handling. It also checks for `text/html` content type.
-4.  **Implemented `DocumentationDownloader.download`**:
-    *   This `async` method orchestrates the download process:
-        *   Initializes `aiohttp.ClientSession`.
-        *   Calls `self.scraper_instance.extract_navigation_links()` to get the list of URLs and their metadata. The `scraper_instance` is assumed to have been initialized with the soup of the `base_url` by the `ScraperFactory`.
-        *   It handles the case where no navigation links are found, attempting to process the `base_url` as a single page.
-        *   It processes the `base_url` itself if it's not already part of the extracted navigation links.
-        *   Iterates through `nav_links_metadata`:
-            *   Fetches HTML content for each link using `_fetch_page`.
-            *   Creates `BeautifulSoup` from the fetched HTML.
-            *   Calls `self.scraper_instance.extract_page_data(page_soup, link_url)` to get a `PageContent` object. The scraper is responsible for all parsing, cleaning, and conversion to Markdown for the `content` field of `PageContent`.
-            *   Stores the `PageContent` object in `self.pages`, using the URL as a key. It also checks for duplicate content using a hash of the Markdown.
-        *   Calls `_generate_markdown` to assemble the final document.
-        *   Includes error handling for various scenarios.
-5.  **Implemented `DocumentationDownloader._generate_markdown`**:
-    *   Sorts pages based on `section`, `subsection`, `order`, and `title` from `PageContent`.
-    *   Generates a Table of Contents with clickable links (using `slugify`). It attempts to create unique slugs by prefixing with section slugs if available.
-    *   Appends the content of each page (which is already Markdown, provided by the scraper via `PageContent.content`). It uses H2 for page titles (or Section - Title) and includes the source URL.
-6.  **Helper `_html_to_markdown`**:
-    *   Included this as a utility function, though it's not directly called by the `download` loop. The responsibility of converting HTML to Markdown lies with the individual scraper's `extract_page_data` method, which should populate `PageContent.content` with Markdown.
-
-The structure seems to correctly place generic download orchestration in `DocumentationDownloader` while relying on the `scraper_instance` for site-specific parsing and content extraction logic. The `PageContent` dataclass serves as the contract for data exchange between the downloader and the scraper.
-
-I believe this fulfills the requirements of the current subtask.
+"""

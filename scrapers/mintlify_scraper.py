@@ -250,12 +250,26 @@ class MintlifyScraper(BaseScraper):
         self.process_special_elements(main_content_element)
 
         html_string = str(main_content_element)
+        
+        def get_code_language(el):
+            """Extract language from code element or parent"""
+            # Check data-lang attribute first
+            if el.get('data-lang'):
+                return el.get('data-lang')
+            # Check parent div for language-xxx class
+            parent_div = el.find_parent('div', class_=re.compile(r"language-\w+"))
+            if parent_div:
+                for cls in parent_div.get('class', []):
+                    if cls.startswith('language-'):
+                        return cls.replace('language-', '')
+            return None
+        
         try:
             md = markdownify.markdownify(
                 html_string, 
                 heading_style="atx",
                 bullets='-',
-                code_language_callback=lambda el: el.get('data-lang') or (el.find_parent('div', class_=re.compile(r"language-(\w+)")) and el.find_parent('div', class_=re.compile(r"language-(\w+)")).get('class')[0].split('-')[-1])
+                code_language_callback=get_code_language
             ).strip()
         except Exception as e:
             logger.error(f"Error during markdownify conversion for Mintlify page {url}: {e}")

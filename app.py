@@ -191,8 +191,8 @@ def start_download():
 
         logger.info(f"Request to start download for URL: {url}")
         
-        # Use the URL directly as the task ID (consider a more robust ID generation if needed)
-        task_id = url 
+        # Encode the URL to use as a safe task ID
+        task_id = quote(url, safe='')
         
         if task_id in active_downloads:
             downloader_status = active_downloads[task_id].status
@@ -247,21 +247,21 @@ def get_status(task_id):
             return jsonify({"error": "Task not found"}), 404
             
         downloader = active_downloads[task_id]
+        status_obj = downloader.status
         status_data = {
-            "status": downloader.status.status,
-            "current_page": downloader.status.current_page,
-            "total_pages": downloader.status.total_pages,
-            "current_url": downloader_status.current_url,
-            "pages_scraped_titles": downloader_status.pages_scraped_titles if hasattr(downloader_status, 'pages_scraped_titles') else [],
-            "error": downloader_status.error,
-            "output_file": downloader_status.output_file,
-            "failed_pages_count": downloader_status.failed_pages_count if hasattr(downloader_status, 'failed_pages_count') else 0,
-            "log_messages": downloader_status.log_messages if hasattr(downloader_status, 'log_messages') else []
+            "status": status_obj.status,
+            "current_page": status_obj.current_page,
+            "total_pages": status_obj.total_pages,
+            "current_url": status_obj.current_url,
+            "pages_scraped_titles": getattr(status_obj, 'pages_scraped_titles', []),
+            "error": status_obj.error,
+            "output_file": status_obj.output_file,
+            "failed_pages_count": getattr(status_obj, 'failed_pages_count', 0),
+            "log_messages": getattr(status_obj, 'log_messages', [])
         }
-        
-        if hasattr(downloader_status, "rate_limit_reset") and downloader_status.rate_limit_reset:
-            status_data["rate_limit_reset"] = downloader_status.rate_limit_reset
-            
+        if getattr(status_obj, "rate_limit_reset", None):
+            status_data["rate_limit_reset"] = status_obj.rate_limit_reset
+
         return jsonify(status_data)
     except Exception as e:
         logger.error(f"Error in get_status for task {task_id}: {str(e)}", exc_info=True)
@@ -345,4 +345,4 @@ def download_markdown(task_id):
 
 if __name__ == '__main__':
     logger.info("Starting Flask application")
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)

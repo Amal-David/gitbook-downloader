@@ -85,10 +85,16 @@ class ReadmeScraper(BaseScraper):
                 continue
 
             url_to_check = parsed_full_url._replace(fragment="").geturl()
-            if url_to_check in processed_urls or not url_to_check.startswith(self.base_url.split('//')[0]): # Ensure same domain/protocol start
-                 if not url_to_check.startswith(self.base_url) and not href.startswith('/'): # Allow relative links
-                    logger.debug(f"Skipping probably external or already processed link: {full_url}")
-                    continue
+            
+            # Skip already processed URLs
+            if url_to_check in processed_urls:
+                continue
+            
+            # Skip external URLs (not starting with base_url)
+            parsed_base = urlparse(self.base_url)
+            if parsed_full_url.netloc != parsed_base.netloc:
+                logger.debug(f"Skipping external link: {full_url}")
+                continue
 
 
             link_text = link_tag.get_text(strip=True) or "Untitled Page"
@@ -171,12 +177,12 @@ class ReadmeScraper(BaseScraper):
                 callout_type_div.decompose() # Remove the icon/type div
 
             if callout_content_div:
-                blockquote = page_soup.new_tag('blockquote')
+                blockquote = main_content_element.new_tag('blockquote')
                 if title:
-                    strong_title = page_soup.new_tag('strong')
+                    strong_title = main_content_element.new_tag('strong')
                     strong_title.string = title
                     blockquote.append(strong_title)
-                    blockquote.append(page_soup.new_tag('br'))
+                    blockquote.append(main_content_element.new_tag('br'))
                 # Move children of callout_content_div to blockquote
                 blockquote.extend(callout_content_div.contents)
                 callout.replace_with(blockquote)

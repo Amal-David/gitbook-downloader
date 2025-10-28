@@ -1,29 +1,59 @@
-# Log files
-*.log
-
 # Python cache
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyo
+*.pyd
 
 # Virtual environment
 venv/
+env/
+ENV/
+
+# Package build and distribution
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Database
+*.sqlite3
+*.db
 
 # Downloads folder
 downloads/
-gitbook_downloader.egg-info/
+
+# Node.js (if needed, otherwise remove package.json/package-lock.json from repo)
+node_modules/
+package-lock.json
 
 # Markdown files except README
 *.md
 !README.md
-# Ignore egg-info folders
-*.egg-info/
 
-# Other common ignores
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.DS_Store
-.env
-*.log
-*.sqlite3
+# Temporary files
+temp_*.md
+*.tmp

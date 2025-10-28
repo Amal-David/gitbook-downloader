@@ -277,7 +277,7 @@ class SphinxScraper(BaseScraper):
         if modern_nav and modern_nav not in nav_elements: nav_elements.append(modern_nav)
         
         toctree_wrappers = self.soup.find_all('div', class_='toctree-wrapper')
-        for wrapper in tocTree_wrappers:
+        for wrapper in toctree_wrappers:
             if wrapper not in nav_elements: nav_elements.append(wrapper)
             
         return nav_elements

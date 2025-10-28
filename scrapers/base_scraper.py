@@ -37,9 +37,13 @@ class BaseScraper(ABC):
         pass
 
     @abstractmethod
-    def extract_main_content(self) -> Optional[BeautifulSoup]:
-        """Extract the main content from the page"""
+    def extract_main_content_element(self, page_soup: BeautifulSoup) -> Optional[BeautifulSoup]:
+        """Extract the main content element from the provided page soup"""
         pass
+
+    def extract_main_content(self) -> Optional[BeautifulSoup]:
+        """Extract the main content from the stored page soup"""
+        return self.extract_main_content_element(self.soup)
 
     @abstractmethod
     def process_special_elements(self, content: BeautifulSoup) -> None:
