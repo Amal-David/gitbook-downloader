@@ -51,7 +51,7 @@ def timeout(seconds=0, minutes=0, hours=0):
 
 @dataclass
 class DownloadStatus:
-    total_pages: int = 0
+    top_level_pages: int = 0
     current_page: int = 0
     current_url: str = ""
     status: str = "idle"
@@ -67,7 +67,7 @@ class DownloadStatus:
 
     def to_dict(self) -> Dict:
         return {
-            "total_pages": self.total_pages,
+            "top_level_pages": self.top_level_pages,
             "current_page": self.current_page,
             "current_url": self.current_url,
             "status": self.status,
@@ -84,11 +84,12 @@ class DownloadStatus:
 
 
 class GitbookDownloader:
-    def __init__(self, url):
+    def __init__(self, url, recursive: bool, native_md: bool):
         self.base_url = url.rstrip("/")
+        self.recursive = recursive
+        self.native_md = native_md
         self.status = DownloadStatus()
         self.session = None
-        self.output_file = None
         self.visited_urls = set()
         self.delay = 1  # Delay between requests in seconds
         self.max_retries = 3
@@ -112,7 +113,7 @@ class GitbookDownloader:
 
                 # Extract navigation links
                 nav_links = await self._extract_nav_links(initial_content)
-                self.status.total_pages = len(nav_links) + 1  # +1 for main page
+                self.status.top_level_pages = len(nav_links) + 1  # +1 for main page
 
                 # Process main page
                 main_page = await self._process_page_content(
@@ -124,39 +125,7 @@ class GitbookDownloader:
                     self.visited_urls.add(self.base_url)
 
                 # Process other pages
-                page_index = 1
-                for link in nav_links:
-                    try:
-                        # Skip if URL already processed
-                        if link in self.visited_urls:
-                            continue
-
-                        self.status.current_page = page_index
-                        self.status.current_url = link
-
-                        # Add delay between requests
-                        await asyncio.sleep(self.delay)
-
-                        content = await self._fetch_page(link)
-                        if content:
-                            page_data = await self._process_page_content(link, content)
-                            if page_data:
-                                # Check for duplicate content
-                                content_hash = hash(page_data["content"])
-                                if content_hash not in self.content_hash:
-                                    self.pages[page_index] = {
-                                        "index": page_index,
-                                        **page_data,
-                                    }
-                                    self.status.pages_scraped.append(page_data["title"])
-                                    self.content_hash[content_hash] = page_index
-                                    page_index += 1
-
-                        self.visited_urls.add(link)
-
-                    except Exception as e:
-                        logger.error(f"Error processing page {link}: {str(e)}")
-                        continue
+                await self._follow_nav_links(nav_links, page_index=1)
 
                 # Generate markdown
                 markdown_content = self._generate_markdown()
@@ -171,6 +140,52 @@ class GitbookDownloader:
             self.status.error = str(e)
             logger.error(f"Download failed: {str(e)}")
             raise
+
+    async def _follow_nav_links(self, nav_links, page_index):
+        for link, title in nav_links:
+            try:
+                # Skip if URL already processed
+                if link in self.visited_urls:
+                    continue
+
+                self.status.current_page = page_index
+                self.status.current_url = link
+
+                # Add delay between requests
+                await asyncio.sleep(self.delay)
+
+                content = await self._fetch_page(link)
+                self.visited_urls.add(link)
+                if content:
+                    if self.native_md:
+                        md_text = await self._fetch_page(f"{link}.md")
+                        page_data = {"title": title, "content": md_text, "url": link}
+                    else:
+                        page_data = await self._process_page_content(link, content)
+                    if page_data:
+                        # Check for duplicate content
+                        content_hash = hash(page_data["content"])
+                        if content_hash not in self.content_hash:
+                            self.pages[page_index] = {
+                                "index": page_index,
+                                **page_data,
+                            }
+                            self.status.pages_scraped.append(page_data["title"])
+                            self.content_hash[content_hash] = page_index
+                            page_index += 1
+
+                            # Search for sub-nav links (only if new content)
+                            if self.recursive:
+                                subnav_links = await self._extract_nav_links(content)
+                                page_index = await self._follow_nav_links(
+                                    subnav_links, page_index
+                                )
+
+            except Exception as e:
+                logger.error(f"Error processing page {link}: {str(e)}")
+                continue
+
+        return page_index
 
     async def _process_page_content(self, url, content):
         """Process the content of a page"""
@@ -266,6 +281,7 @@ class GitbookDownloader:
         """Fetch a page with retry logic"""
         retry_count = 0
         current_delay = self.retry_delay
+        logging.info(f"fetching {url}")  # TODO: remove
 
         while retry_count < self.max_retries:
             try:
@@ -328,10 +344,8 @@ class GitbookDownloader:
                                 continue
 
                             # Skip duplicate URLs and fragments
-                            if full_url not in processed_urls and not href.startswith(
-                                "#"
-                            ):
-                                nav_links.append(full_url)
+                            if full_url not in processed_urls:
+                                nav_links.append((full_url, link.get_text()))
                                 processed_urls.add(full_url)
 
             # Also check for next/prev navigation links
@@ -350,7 +364,7 @@ class GitbookDownloader:
                         continue
 
                     if full_url not in processed_urls and not href.startswith("#"):
-                        nav_links.append(full_url)
+                        nav_links.append((full_url, link.get_text()))
                         processed_urls.add(full_url)
 
             # Remove duplicates while preserving order

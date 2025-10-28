@@ -7,7 +7,7 @@ readme = "README.md"
 packages = [{include = "gitbook_downloader"}]
 
 [tool.poetry.dependencies]
-python = "3.13"
+python = "^3.13"
 requests = "^2.32.3"
 beautifulsoup4 = "^4.13.4"
 markdown = "^3.8"
