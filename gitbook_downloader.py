@@ -15,38 +15,14 @@ import aiohttp
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import time
-from contextlib import contextmanager
+import hashlib
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
-@contextmanager
-def timeout(seconds=0, minutes=0, hours=0):
-    """
-    Add a signal-based timeout to any function.
-    Usage:
-    with timeout(seconds=5):
-        my_slow_function(...)
-    Args:
-    - seconds: The time limit, in seconds.
-    - minutes: The time limit, in minutes.
-    - hours: The time limit, in hours.
-    """
-    limit = seconds + 60 * minutes + 3600 * hours
-    try:
 
-        async def check_timeout():
-            await asyncio.sleep(limit)
-            raise TimeoutError("timed out after {} seconds".format(limit))
-
-        asyncio.create_task(check_timeout())
-        yield
-    except TimeoutError as e:
-        raise e
-    finally:
-        asyncio.create_task(check_timeout()).cancel()
 
 
 @dataclass
@@ -85,7 +61,9 @@ class DownloadStatus:
 
 class GitbookDownloader:
     def __init__(self, url, recursive: bool, native_md: bool):
-        self.base_url = url.rstrip("/")
+        # Preserve trailing slash so urljoin treats base_url as a directory
+        # This prevents dropping path prefixes like /scf-handbook when joining relative URLs
+        self.base_url = url.rstrip("/") + "/"
         self.recursive = recursive
         self.native_md = native_md
         self.status = DownloadStatus()
@@ -104,8 +82,9 @@ class GitbookDownloader:
             self.status.status = "downloading"
             self.visited_urls = set()  # Track visited URLs
 
-            # Create aiohttp session
-            async with aiohttp.ClientSession() as self.session:
+            # Create aiohttp session with timeout
+            timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
+            async with aiohttp.ClientSession(timeout=timeout) as self.session:
                 # First get the main page
                 initial_content = await self._fetch_page(self.base_url)
                 if not initial_content:
@@ -163,8 +142,10 @@ class GitbookDownloader:
                     else:
                         page_data = await self._process_page_content(link, content)
                     if page_data:
-                        # Check for duplicate content
-                        content_hash = hash(page_data["content"])
+                        # Check for duplicate content using SHA256 for stable hashing
+                        content_hash = hashlib.sha256(
+                            page_data["content"].encode("utf-8")
+                        ).hexdigest()
                         if content_hash not in self.content_hash:
                             self.pages[page_index] = {
                                 "index": page_index,
