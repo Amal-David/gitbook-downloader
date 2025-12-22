@@ -348,6 +348,36 @@ class GitbookDownloader:
                         nav_links.append((full_url, link.get_text()))
                         processed_urls.add(full_url)
 
+            # Fallback: If no nav links found in nav/aside, look for documentation links
+            # This handles sites like Mintlify that don't use traditional nav structures
+            if not nav_links:
+                # For initial navigation extraction, search the whole page (not just main content)
+                # because navigation is often in header/sidebar elements
+                # Find all links that point to other pages on the same domain
+                all_links = soup.find_all("a", href=True)
+                for link in all_links:
+                    href = link.get("href")
+                    if href and not href.startswith("#"):
+                        parsed_href = urlparse(href)
+                        if not parsed_href.netloc:
+                            full_url = urljoin(self.base_url, href)
+                        elif href.startswith(self.base_url):
+                            full_url = href
+                        else:
+                            continue
+
+                        # Only include links that are different from the base URL and look like doc pages
+                        if (full_url not in processed_urls and
+                            full_url != self.base_url.rstrip("/") and
+                            full_url.startswith(self.base_url) and
+                            not any(skip in full_url for skip in ["#", "mailto:", "tel:", ".pdf", ".jpg", ".png", ".gif", ".svg", "api-docs"])):
+                            link_text = link.get_text(strip=True)
+                            # Only include links with meaningful text (not empty, not just icons)
+                            # Filter out very short text that's likely just icons or separators
+                            if link_text and len(link_text.strip()) > 1:
+                                nav_links.append((full_url, link_text.strip()))
+                                processed_urls.add(full_url)
+
             # Remove duplicates while preserving order
             return list(dict.fromkeys(nav_links))
 
