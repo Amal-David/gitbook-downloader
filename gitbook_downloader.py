@@ -1,28 +1,171 @@
-import requests
-from bs4 import BeautifulSoup, Comment
-import json
-from urllib.parse import urljoin, urlparse
-import re
-from slugify import slugify
-import os
-import logging
-from typing import Dict, Optional, List, Set
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-import markdownify
+from typing import Dict, Optional, List, Set
+from urllib.parse import urljoin, urlparse
 import asyncio
-import aiohttp
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
-import time
 import hashlib
+import logging
+import re
+import time
+
+import aiohttp
+import markdownify
+from bs4 import BeautifulSoup
+from slugify import slugify
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
+def normalize_url(href: str, base_url: str) -> Optional[str]:
+    """Convert href to full URL, strip fragments, normalize slashes.
+    Returns None if URL should be skipped (fragment-only or external)."""
+    if not href or href.startswith("#"):
+        return None
 
+    parsed_href = urlparse(href)
+    if not parsed_href.netloc:
+        full_url = urljoin(base_url, href)
+    elif href.startswith(base_url.rstrip("/")):
+        full_url = href
+    else:
+        return None  # External URL
+
+    # Strip fragment and normalize trailing slash
+    return full_url.split("#", 1)[0].rstrip("/")
+
+
+def should_skip_url(url: str) -> bool:
+    """Return True for mailto:, images, PDFs, etc."""
+    skip_patterns = ["mailto:", "tel:", ".pdf", ".jpg", ".png", ".gif", ".svg", "api-docs"]
+    return any(skip in url for skip in skip_patterns)
+
+
+class NavExtractor(ABC):
+    """Abstract base class for navigation extraction strategies."""
+
+    @abstractmethod
+    def can_handle(self, soup: BeautifulSoup) -> bool:
+        """Return True if this extractor can handle the page structure."""
+        pass
+
+    @abstractmethod
+    def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
+        """Extract navigation links as list of (url, title, depth) tuples.
+        URL can be None for section headers."""
+        pass
+
+    def _process_nav_list(self, nav_list, base_url: str, processed_urls: Set[str], depth: int = 0) -> List[tuple]:
+        """Recursively process navigation list items, tracking depth for hierarchy."""
+        nav_links = []
+        for li in nav_list.find_all("li", recursive=False):
+            link = li.find("a", href=True)
+            if link:
+                url = normalize_url(link["href"], base_url)
+                if url and url not in processed_urls and not should_skip_url(url):
+                    nav_links.append((url, link.get_text(strip=True), depth))
+                    processed_urls.add(url)
+
+            # Process nested lists (children of this li)
+            for nested_list in li.find_all(["ol", "ul"], recursive=False):
+                nav_links.extend(self._process_nav_list(nested_list, base_url, processed_urls, depth + 1))
+
+        return nav_links
+
+
+class MintlifyExtractor(NavExtractor):
+    """Extractor for Mintlify documentation sites."""
+
+    def can_handle(self, soup: BeautifulSoup) -> bool:
+        return soup.find(id="navigation-items") is not None
+
+    def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
+        nav_links = []
+        navigation_items = soup.find(id="navigation-items")
+
+        for child in navigation_items.children:
+            if not hasattr(child, 'name'):
+                continue
+
+            # Check for section group (div with sidebar-group-header + sidebar-group ul)
+            group_header = child.find(class_="sidebar-group-header") if hasattr(child, 'find') else None
+            if group_header:
+                # Get section title from h5 or other heading
+                title_elem = group_header.find(["h5", "h4", "h3", "span"])
+                if title_elem:
+                    section_title = title_elem.get_text(strip=True)
+                    if section_title:
+                        nav_links.append((None, section_title, 0))  # Section header
+
+                # Get links in this section
+                sidebar_group = child.find(class_="sidebar-group") or child.find("ul")
+                if sidebar_group:
+                    nav_links.extend(self._process_nav_list(sidebar_group, base_url, processed_urls, depth=1))
+
+            elif child.name == "ul":
+                nav_links.extend(self._process_nav_list(child, base_url, processed_urls, depth=0))
+
+        return nav_links
+
+
+class GitBookExtractor(NavExtractor):
+    """Extractor for traditional GitBook sites with nav/aside navigation."""
+
+    def can_handle(self, soup: BeautifulSoup) -> bool:
+        nav_elements = soup.find_all(["nav", "aside"])
+        for nav in nav_elements:
+            if nav.find_all(["ol", "ul"]):
+                return True
+        return False
+
+    def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
+        nav_links = []
+        nav_elements = soup.find_all(["nav", "aside"])
+
+        for nav in nav_elements:
+            nav_lists = nav.find_all(["ol", "ul"], recursive=False)
+            if not nav_lists:
+                nav_lists = nav.find_all(["ol", "ul"])
+            for nav_list in nav_lists:
+                nav_links.extend(self._process_nav_list(nav_list, base_url, processed_urls, depth=0))
+
+        # Also check for next/prev navigation links
+        for link in soup.find_all("a", {"aria-label": ["Next", "Previous", "next", "previous"]}):
+            url = normalize_url(link.get("href"), base_url)
+            if url and url not in processed_urls:
+                nav_links.append((url, link.get_text(strip=True), 0))
+                processed_urls.add(url)
+
+        return nav_links
+
+
+class FallbackExtractor(NavExtractor):
+    """Fallback extractor that finds all same-domain links."""
+
+    def can_handle(self, soup: BeautifulSoup) -> bool:
+        return True  # Always can handle as fallback
+
+    def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
+        nav_links = []
+        base_url_normalized = base_url.rstrip("/")
+
+        for link in soup.find_all("a", href=True):
+            url = normalize_url(link.get("href"), base_url)
+            if not url or url in processed_urls or should_skip_url(url):
+                continue
+
+            # Only include links under base_url, exclude base_url itself
+            if url == base_url_normalized or not url.startswith(base_url_normalized):
+                continue
+
+            link_text = link.get_text(strip=True)
+            if link_text and len(link_text) > 1:  # Skip icons/separators
+                nav_links.append((url, link_text, 0))
+                processed_urls.add(url)
+
+        return nav_links
 
 
 @dataclass
@@ -74,6 +217,8 @@ class GitbookDownloader:
         self.pages = {}  # Store page titles and content
         self.content_hash = {}  # Track content hashes
         self.has_global_nav = False  # True for sites like Mintlify where nav is identical on all pages
+        # Navigation extractors in priority order
+        self.extractors = [MintlifyExtractor(), GitBookExtractor(), FallbackExtractor()]
 
     async def download(self):
         """Main download method"""
@@ -316,7 +461,7 @@ class GitbookDownloader:
         """Fetch a page with retry logic"""
         retry_count = 0
         current_delay = self.retry_delay
-        logging.info(f"fetching {url}")  # TODO: remove
+        logging.info(f"fetching {url}")
 
         while retry_count < self.max_retries:
             try:
@@ -347,155 +492,27 @@ class GitbookDownloader:
 
         return None
 
-    def _process_nav_list(self, nav_list, processed_urls, depth=0):
-        """Recursively process navigation list items, tracking depth for hierarchy."""
-        nav_links = []
-        for li in nav_list.find_all("li", recursive=False):
-            link = li.find("a", href=True)
-            if link:
-                href = link["href"]
-                # Skip fragment-only links
-                if href.startswith("#"):
-                    continue
-                # Use urlparse/urljoin so relative paths that already include
-                # the base path are handled correctly (no double prefix).
-                parsed_href = urlparse(href)
-                if not parsed_href.netloc:
-                    full_url = urljoin(self.base_url, href)
-                elif href.startswith(self.base_url):
-                    full_url = href
-                else:
-                    continue
-
-                # Skip duplicate URLs, strip fragments, and normalize trailing slashes
-                url_without_fragment = full_url.split("#", 1)[0].rstrip("/")
-                if url_without_fragment not in processed_urls:
-                    nav_links.append((url_without_fragment, link.get_text(), depth))
-                    processed_urls.add(url_without_fragment)
-
-            # Process nested lists (children of this li)
-            nested_lists = li.find_all(["ol", "ul"], recursive=False)
-            for nested_list in nested_lists:
-                nav_links.extend(self._process_nav_list(nested_list, processed_urls, depth + 1))
-
-        return nav_links
-
     async def _extract_nav_links(self, content):
-        """Extract navigation links from GitBook page content with hierarchy depth."""
+        """Extract navigation links using the first matching extractor."""
         try:
             soup = BeautifulSoup(content, "html.parser")
-            nav_links = []
             processed_urls = set()
 
-            # Check for Mintlify-style navigation (sidebar-group pattern)
-            navigation_items = soup.find(id="navigation-items")
-            if navigation_items:
-                # Mintlify sites have identical nav on all pages - skip recursive extraction
-                self.has_global_nav = True
-                # Process Mintlify sidebar structure
-                for child in navigation_items.children:
-                    if not hasattr(child, 'name'):
-                        continue
-                    # Check for section group (div with sidebar-group-header + sidebar-group ul)
-                    group_header = child.find(class_="sidebar-group-header") if hasattr(child, 'find') else None
-                    if group_header:
-                        # Get section title from h5 or other heading
-                        title_elem = group_header.find(["h5", "h4", "h3", "span"])
-                        if title_elem:
-                            section_title = title_elem.get_text(strip=True)
-                            if section_title:
-                                # Add section header as title-only entry (URL=None)
-                                nav_links.append((None, section_title, 0))
-                        # Get links in this section
-                        sidebar_group = child.find(class_="sidebar-group") or child.find("ul")
-                        if sidebar_group:
-                            nav_links.extend(self._process_nav_list(sidebar_group, processed_urls, depth=1))
-                    elif child.name == "ul":
-                        # Top-level list (external links like MetaDAO, API Docs)
-                        nav_links.extend(self._process_nav_list(child, processed_urls, depth=0))
+            for extractor in self.extractors:
+                if extractor.can_handle(soup):
+                    # Set global nav flag for Mintlify sites
+                    if isinstance(extractor, MintlifyExtractor):
+                        self.has_global_nav = True
+                    nav_links = extractor.extract(soup, self.base_url, processed_urls)
+                    if nav_links:
+                        # Deduplicate while preserving order
+                        seen = set()
+                        return [
+                            item for item in nav_links
+                            if item[0] is None or (item[0] not in seen and not seen.add(item[0]))
+                        ]
 
-            # Find GitBook navigation elements (traditional structure)
-            if not nav_links:
-                nav_elements = soup.find_all(["nav", "aside"])
-                for nav in nav_elements:
-                    # Look for top-level lists that typically contain the navigation
-                    nav_lists = nav.find_all(["ol", "ul"], recursive=False)
-                    if not nav_lists:
-                        # If no direct child lists, find any lists
-                        nav_lists = nav.find_all(["ol", "ul"])
-                    for nav_list in nav_lists:
-                        nav_links.extend(self._process_nav_list(nav_list, processed_urls, depth=0))
-
-            # Also check for next/prev navigation links (these are always depth 0)
-            next_links = soup.find_all(
-                "a", {"aria-label": ["Next", "Previous", "next", "previous"]}
-            )
-            for link in next_links:
-                href = link.get("href")
-                if href:
-                    parsed_href = urlparse(href)
-                    if not parsed_href.netloc:
-                        full_url = urljoin(self.base_url, href)
-                    elif href.startswith(self.base_url):
-                        full_url = href
-                    else:
-                        continue
-
-                    # Skip fragment-only links, strip fragments, and normalize trailing slashes
-                    url_without_fragment = full_url.split("#", 1)[0].rstrip("/")
-                    if url_without_fragment not in processed_urls and not href.startswith("#"):
-                        nav_links.append((url_without_fragment, link.get_text(), 0))
-                        processed_urls.add(url_without_fragment)
-
-            # Fallback: If no nav links found in nav/aside, look for documentation links
-            # This handles sites like Mintlify that don't use traditional nav structures
-            if not nav_links:
-                # For initial navigation extraction, search the whole page (not just main content)
-                # because navigation is often in header/sidebar elements
-                # Find all links that point to other pages on the same domain
-                all_links = soup.find_all("a", href=True)
-                for link in all_links:
-                    href = link.get("href")
-                    if href and not href.startswith("#"):
-                        parsed_href = urlparse(href)
-                        if not parsed_href.netloc:
-                            full_url = urljoin(self.base_url, href)
-                        elif href.startswith(self.base_url):
-                            full_url = href
-                        else:
-                            continue
-
-                        # Only include links that are different from the base URL and look like doc pages
-                        # Strip fragment and normalize trailing slashes
-                        url_without_fragment = full_url.split("#", 1)[0].rstrip("/")
-                        base_url_normalized = self.base_url.rstrip("/")
-                        # Skip fragment-only links or links that only differ by fragment from base URL
-                        if full_url.startswith("#") or url_without_fragment == base_url_normalized:
-                            continue
-                        if (url_without_fragment not in processed_urls and
-                            url_without_fragment.startswith(base_url_normalized) and
-                            not any(skip in url_without_fragment for skip in ["mailto:", "tel:", ".pdf", ".jpg", ".png", ".gif", ".svg", "api-docs"])):
-                            link_text = link.get_text(strip=True)
-                            # Only include links with meaningful text (not empty, not just icons)
-                            # Filter out very short text that's likely just icons or separators
-                            if link_text and len(link_text.strip()) > 1:
-                                # Fallback links have no hierarchy info, use depth 0
-                                nav_links.append((url_without_fragment, link_text.strip(), 0))
-                                processed_urls.add(url_without_fragment)
-
-            # Remove duplicates while preserving order (use url as key since tuples now have 3 elements)
-            # Section headers (url=None) are never duplicates - they have unique titles
-            seen_urls = set()
-            unique_links = []
-            for item in nav_links:
-                url = item[0]
-                if url is None:
-                    # Section headers - always keep (they have unique titles)
-                    unique_links.append(item)
-                elif url not in seen_urls:
-                    seen_urls.add(url)
-                    unique_links.append(item)
-            return unique_links
+            return []
 
         except Exception as e:
             logger.error(f"Error extracting nav links: {str(e)}")
