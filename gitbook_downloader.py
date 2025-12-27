@@ -60,11 +60,10 @@ class DownloadStatus:
 
 
 class GitbookDownloader:
-    def __init__(self, url, recursive: bool, native_md: bool):
+    def __init__(self, url, native_md: bool):
         # Preserve trailing slash so urljoin treats base_url as a directory
         # This prevents dropping path prefixes like /scf-handbook when joining relative URLs
         self.base_url = url.rstrip("/") + "/"
-        self.recursive = recursive
         self.native_md = native_md
         self.status = DownloadStatus()
         self.session = None
@@ -155,12 +154,12 @@ class GitbookDownloader:
                             self.content_hash[content_hash] = page_index
                             page_index += 1
 
-                            # Search for sub-nav links (only if new content)
-                            if self.recursive:
-                                subnav_links = await self._extract_nav_links(content)
-                                page_index = await self._follow_nav_links(
-                                    subnav_links, page_index
-                                )
+                            # Always search for sub-nav links to handle sites with
+                            # JS-rendered collapsible navigation (e.g., Vocs, Docusaurus)
+                            subnav_links = await self._extract_nav_links(content)
+                            page_index = await self._follow_nav_links(
+                                subnav_links, page_index
+                            )
 
             except Exception as e:
                 logger.error(f"Error processing page {link}: {str(e)}")
@@ -345,10 +344,10 @@ class GitbookDownloader:
                             else:
                                 continue
 
-                            # Skip duplicate URLs (compare without fragments)
-                            url_without_fragment = full_url.split("#", 1)[0]
+                            # Skip duplicate URLs, strip fragments, and normalize trailing slashes
+                            url_without_fragment = full_url.split("#", 1)[0].rstrip("/")
                             if url_without_fragment not in processed_urls:
-                                nav_links.append((full_url, link.get_text()))
+                                nav_links.append((url_without_fragment, link.get_text()))
                                 processed_urls.add(url_without_fragment)
 
             # Also check for next/prev navigation links
@@ -366,10 +365,10 @@ class GitbookDownloader:
                     else:
                         continue
 
-                    # Skip fragment-only links (compare without fragments for duplicates)
-                    url_without_fragment = full_url.split("#", 1)[0]
+                    # Skip fragment-only links, strip fragments, and normalize trailing slashes
+                    url_without_fragment = full_url.split("#", 1)[0].rstrip("/")
                     if url_without_fragment not in processed_urls and not href.startswith("#"):
-                        nav_links.append((full_url, link.get_text()))
+                        nav_links.append((url_without_fragment, link.get_text()))
                         processed_urls.add(url_without_fragment)
 
             # Fallback: If no nav links found in nav/aside, look for documentation links
@@ -391,20 +390,20 @@ class GitbookDownloader:
                             continue
 
                         # Only include links that are different from the base URL and look like doc pages
-                        # Strip fragment for duplicate detection
-                        url_without_fragment = full_url.split("#", 1)[0]
+                        # Strip fragment and normalize trailing slashes
+                        url_without_fragment = full_url.split("#", 1)[0].rstrip("/")
+                        base_url_normalized = self.base_url.rstrip("/")
                         # Skip fragment-only links or links that only differ by fragment from base URL
-                        if full_url.startswith("#") or url_without_fragment.rstrip("/") == self.base_url.rstrip("/"):
+                        if full_url.startswith("#") or url_without_fragment == base_url_normalized:
                             continue
                         if (url_without_fragment not in processed_urls and
-                            full_url != self.base_url.rstrip("/") and
-                            full_url.startswith(self.base_url) and
-                            not any(skip in full_url for skip in ["mailto:", "tel:", ".pdf", ".jpg", ".png", ".gif", ".svg", "api-docs"])):
+                            url_without_fragment.startswith(base_url_normalized) and
+                            not any(skip in url_without_fragment for skip in ["mailto:", "tel:", ".pdf", ".jpg", ".png", ".gif", ".svg", "api-docs"])):
                             link_text = link.get_text(strip=True)
                             # Only include links with meaningful text (not empty, not just icons)
                             # Filter out very short text that's likely just icons or separators
                             if link_text and len(link_text.strip()) > 1:
-                                nav_links.append((full_url, link_text.strip()))
+                                nav_links.append((url_without_fragment, link_text.strip()))
                                 processed_urls.add(url_without_fragment)
 
             # Remove duplicates while preserving order
