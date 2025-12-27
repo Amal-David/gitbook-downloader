@@ -187,8 +187,14 @@ class GitbookDownloader:
             if not title:
                 title = urlparse(url).path.split("/")[-1] or "Introduction"
 
-            # Get main content
-            main_content = soup.find(["main", "article"])
+            # Get main content - prefer more specific containers first
+            # Look for article first (more specific), then main (less specific)
+            main_content = soup.find("article")
+            if not main_content:
+                # Try content-area div (common in Mintlify sites)
+                main_content = soup.find("div", {"id": "content-area"})
+            if not main_content:
+                main_content = soup.find("main")
             if not main_content:
                 main_content = soup.find(
                     "div",
@@ -200,6 +206,10 @@ class GitbookDownloader:
             # Remove navigation elements
             for nav in main_content.find_all(["nav", "aside", "header", "footer"]):
                 nav.decompose()
+
+            # Remove sidebar elements by id (common patterns)
+            for sidebar in main_content.find_all(id=re.compile(r"sidebar|nav|menu", re.I)):
+                sidebar.decompose()
 
             # Remove scripts and styles
             for tag in main_content.find_all(["script", "style"]):
@@ -216,6 +226,8 @@ class GitbookDownloader:
             # Clean up markdown
             md = re.sub(r"\n{3,}", "\n\n", md)  # Remove extra newlines
             md = re.sub(r"#{3,}", "##", md)  # Normalize heading levels
+            # Remove permalink anchor links like [​](#anchor) or [ ](#anchor)
+            md = re.sub(r'\[[\s\u200b]*\]\(#[^)]+\)\s*', '', md)
 
             return {"title": title, "content": md, "url": url}
 
@@ -233,12 +245,21 @@ class GitbookDownloader:
 
         # Add table of contents
         markdown_parts.append("# Table of Contents\n")
+        # For single-page docs, include h2 headings for richer ToC
+        include_h2 = len(self.pages) == 1
         for page in sorted(self.pages.values(), key=lambda x: x["index"]):
             if page.get("title"):
                 title = page["title"].strip()
                 if title and title not in seen_titles:
                     markdown_parts.append(f"- [{title}](#{slugify(title)})")
                     seen_titles.add(title)
+                    # Extract h2 headings from content for sub-items
+                    if include_h2 and page.get("content"):
+                        h2_headings = re.findall(r'^## (.+)$', page["content"], re.MULTILINE)
+                        for h2 in h2_headings:
+                            h2_clean = h2.strip()
+                            if h2_clean:
+                                markdown_parts.append(f"  - [{h2_clean}](#{slugify(h2_clean)})")
 
         markdown_parts.append("\n---\n")
 
