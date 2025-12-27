@@ -324,10 +324,11 @@ class GitbookDownloader:
                             else:
                                 continue
 
-                            # Skip duplicate URLs and fragments
-                            if full_url not in processed_urls:
+                            # Skip duplicate URLs (compare without fragments)
+                            url_without_fragment = full_url.split("#", 1)[0]
+                            if url_without_fragment not in processed_urls:
                                 nav_links.append((full_url, link.get_text()))
-                                processed_urls.add(full_url)
+                                processed_urls.add(url_without_fragment)
 
             # Also check for next/prev navigation links
             next_links = soup.find_all(
@@ -344,9 +345,11 @@ class GitbookDownloader:
                     else:
                         continue
 
-                    if full_url not in processed_urls and not href.startswith("#"):
+                    # Skip fragment-only links (compare without fragments for duplicates)
+                    url_without_fragment = full_url.split("#", 1)[0]
+                    if url_without_fragment not in processed_urls and not href.startswith("#"):
                         nav_links.append((full_url, link.get_text()))
-                        processed_urls.add(full_url)
+                        processed_urls.add(url_without_fragment)
 
             # Fallback: If no nav links found in nav/aside, look for documentation links
             # This handles sites like Mintlify that don't use traditional nav structures
@@ -367,16 +370,21 @@ class GitbookDownloader:
                             continue
 
                         # Only include links that are different from the base URL and look like doc pages
-                        if (full_url not in processed_urls and
+                        # Strip fragment for duplicate detection
+                        url_without_fragment = full_url.split("#", 1)[0]
+                        # Skip fragment-only links or links that only differ by fragment from base URL
+                        if full_url.startswith("#") or url_without_fragment.rstrip("/") == self.base_url.rstrip("/"):
+                            continue
+                        if (url_without_fragment not in processed_urls and
                             full_url != self.base_url.rstrip("/") and
                             full_url.startswith(self.base_url) and
-                            not any(skip in full_url for skip in ["#", "mailto:", "tel:", ".pdf", ".jpg", ".png", ".gif", ".svg", "api-docs"])):
+                            not any(skip in full_url for skip in ["mailto:", "tel:", ".pdf", ".jpg", ".png", ".gif", ".svg", "api-docs"])):
                             link_text = link.get_text(strip=True)
                             # Only include links with meaningful text (not empty, not just icons)
                             # Filter out very short text that's likely just icons or separators
                             if link_text and len(link_text.strip()) > 1:
                                 nav_links.append((full_url, link_text.strip()))
-                                processed_urls.add(full_url)
+                                processed_urls.add(url_without_fragment)
 
             # Remove duplicates while preserving order
             return list(dict.fromkeys(nav_links))
