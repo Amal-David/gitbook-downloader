@@ -46,7 +46,7 @@ def download_task(url, task_id):
     """Background task to download content"""
     try:
         logger.info(f"Starting download task for {url}")
-        downloader = GitbookDownloader(url)
+        downloader = GitbookDownloader(url, native_md=False)
         active_downloads[task_id] = downloader
         
         # Create new event loop for this thread
