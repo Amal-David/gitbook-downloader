@@ -650,6 +650,7 @@ class GitbookDownloader:
         self.content_hash = {}  # Track content hashes
         self.has_global_nav = False  # True for sites like Mintlify where nav is identical on all pages
         self.nav_preserves_order = False  # True for extractors that produce reliable nav ordering
+        self.sparse_nav = False  # True for sites with collapsed nav where sub-page section headers should be filtered
         # Navigation extractors in priority order
         self.extractors = [
             MintlifyExtractor(),
@@ -786,6 +787,10 @@ class GitbookDownloader:
                             # Skip for sites with global nav (e.g., Mintlify) since all pages have same sidebar
                             if not self.has_global_nav:
                                 subnav_links = await self._extract_nav_links(content)
+                                # For sites with sparse nav (collapsed sections), filter out section headers
+                                # from sub-pages to avoid depth issues (sub-pages have local depths)
+                                if self.sparse_nav:
+                                    subnav_links = [(url, title, depth) for url, title, depth in subnav_links if url is not None]
                                 page_index = await self._follow_nav_links(
                                     subnav_links, page_index
                                 )
@@ -872,9 +877,9 @@ class GitbookDownloader:
         """Generate a sort key for a page based on URL structure.
 
         This groups pages by URL prefix and ensures:
-        - Root and top-level pages come first
-        - Pages are grouped by their first path segment (section)
-        - Children appear immediately after their parent
+        - Root page comes first
+        - Top-level pages (single path segment) come second
+        - Section-grouped pages come third, grouped by first segment
         - Section headers are placed at the start of their section
         """
         url = page.get("url")
@@ -894,15 +899,16 @@ class GitbookDownloader:
 
             if not segments or not relative_path:
                 # Root page: sort first
-                return (0, "", "", "")
+                return (0, 0, "", "", "")
 
-            # Use first path segment as section grouping key
-            # This naturally groups /protocol/*, /developer/*, /examples/* etc.
+            if len(segments) == 1:
+                # Top-level page (e.g., /intro, /faq): sort after root, before sections
+                return (1, 0, relative_path, "", "")
+
+            # Nested page (e.g., /borg/foo): group by first segment
             first_segment = segments[0]
-
-            # Sort key: (1=non-root, section_name, full_path, "")
-            # This groups all pages by section alphabetically, then sorts within section by path
-            return (1, first_segment, relative_path, "")
+            # Sort key: (1=non-root, 1=nested, section_name, full_path, "")
+            return (1, 1, first_segment, relative_path, "")
         else:
             # Section header (no URL) - try to place it before its section's pages
             title = page.get("title", "").lower()
@@ -913,8 +919,8 @@ class GitbookDownloader:
             words = clean_title.split()
             section_key = words[0] if words else ""
 
-            # Section headers sort before their pages (empty string sorts before any path)
-            return (1, section_key, "", title)
+            # Section headers sort before their pages within the section group
+            return (1, 1, section_key, "", title)
 
     def _generate_markdown(self):
         """Generate markdown content from downloaded pages"""
@@ -1113,6 +1119,9 @@ class GitbookDownloader:
                             if section_headers and len(actual_pages) <= len(section_headers) + 3:
                                 # Don't trust nav order when using fallback - use URL-based sorting
                                 self.nav_preserves_order = False
+                                # Mark nav as sparse so subnav extraction filters section headers
+                                # (sub-pages have expanded sections with local depths that don't match global structure)
+                                self.sparse_nav = True
                                 fallback = FallbackExtractor()
                                 content_links = fallback.extract(soup, self.base_url, processed_urls)
                                 # Bump fallback depths by 1 since section headers are at depth 0
