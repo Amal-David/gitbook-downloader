@@ -17,6 +17,13 @@ DOCS = [
     ["https://gmtribe.gitbook.io/gmtribe/", "gmtribe-docs.md"],
     ["https://docs.metadao.fi/", "metadao-docs.md"],
     ["https://metalex-docs.vercel.app/", "metalex-docs.md"],
+    ["https://docs.aztec.network/", "aztec-docs.md"],
+    ["https://noir-lang.org/docs", "noir-docs.md"],
+    ["https://docs.zama.org/protocol", "zama-protocol-docs.md"],
+    ["https://docs.zama.org/protocol/solidity-guides", "zama-solidity-docs.md"],
+    ["https://docs.zama.org/protocol/relayer-sdk-guides", "zama-relayer-sdk-docs.md"],
+    ["https://docs.zama.org/protocol/examples", "zama-examples-docs.md"],
+    ["https://docs.zama.org/protocol/zama-protocol-litepaper", "zama-protocol-litepaper.md"],
 ]
 
 

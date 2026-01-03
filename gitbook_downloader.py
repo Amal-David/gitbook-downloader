@@ -222,6 +222,229 @@ class VocsExtractor(NavExtractor):
         return nav_links
 
 
+class DocusaurusExtractor(NavExtractor):
+    """Extractor for Docusaurus v2/v3 documentation sites."""
+
+    def can_handle(self, soup: BeautifulSoup) -> bool:
+        # Docusaurus uses Infima CSS with menu__list and menu__link classes
+        menu_list = soup.find(class_=re.compile(r'\bmenu__list\b'))
+        menu_link = soup.find(class_=re.compile(r'\bmenu__link\b'))
+        return menu_list is not None and menu_link is not None
+
+    def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
+        nav_links = []
+
+        # Find the main sidebar navigation
+        sidebar = soup.find('nav', class_=re.compile(r'\bmenu\b'))
+        if not sidebar:
+            sidebar = soup.find('aside', class_=re.compile(r'docSidebar|theme-doc-sidebar'))
+        if not sidebar:
+            # Try finding any element containing menu__list
+            menu_list = soup.find('ul', class_=re.compile(r'\bmenu__list\b'))
+            if menu_list:
+                sidebar = menu_list.parent
+        if not sidebar:
+            return nav_links
+
+        # Find top-level menu lists
+        menu_lists = sidebar.find_all('ul', class_=re.compile(r'\bmenu__list\b'), recursive=False)
+        if not menu_lists:
+            menu_lists = sidebar.find_all('ul', class_=re.compile(r'\bmenu__list\b'))
+
+        for menu_list in menu_lists:
+            nav_links.extend(self._process_menu_list(menu_list, base_url, processed_urls, depth=0))
+
+        return nav_links
+
+    def _process_menu_list(self, menu_list, base_url: str, processed_urls: Set[str], depth: int) -> List[tuple]:
+        nav_links = []
+        in_section = False  # Track if we're inside a named section
+
+        # Find all list items (both menu__list-item and sidebar-title items)
+        for li in menu_list.find_all('li', recursive=False):
+            classes = li.get('class', [])
+            class_str = ' '.join(classes) if isinstance(classes, list) else classes
+
+            # Check for sidebar-title (section header without link) - Docusaurus custom theme element
+            if 'sidebar-title' in class_str:
+                title_span = li.find('span', class_='sidebar-title')
+                if title_span:
+                    title = title_span.get_text(strip=True)
+                    if title:
+                        nav_links.append((None, title, depth))
+                        in_section = True  # Items after this should be indented
+                continue
+
+            # Skip if not a menu list item
+            if 'menu__list-item' not in class_str:
+                continue
+
+            # Determine current item depth (indent if we're in a named section)
+            current_depth = depth + 1 if in_section else depth
+
+            # Check if this is a category (collapsible section)
+            is_category = 'theme-doc-sidebar-item-category' in class_str or \
+                          li.find(class_=re.compile(r'menu__link--sublist'))
+
+            if is_category:
+                # Extract category header
+                category_link = li.find('a', class_=re.compile(r'menu__link--sublist|menu__link'))
+                if category_link:
+                    title = category_link.get_text(strip=True)
+                    href = category_link.get('href')
+
+                    # Category might be a link itself or just a header
+                    if href and href != '#' and not href.startswith('#'):
+                        url = normalize_url(href, base_url)
+                        if url and url not in processed_urls and not should_skip_url(url):
+                            nav_links.append((url, title, current_depth))
+                            processed_urls.add(url)
+                    elif title:
+                        # Non-link category header
+                        nav_links.append((None, title, current_depth))
+
+                # Process nested items
+                nested_list = li.find('ul', class_=re.compile(r'\bmenu__list\b'))
+                if nested_list:
+                    nav_links.extend(self._process_menu_list(nested_list, base_url, processed_urls, current_depth + 1))
+            else:
+                # Regular link item
+                link = li.find('a', class_=re.compile(r'\bmenu__link\b'), href=True)
+                if link:
+                    url = normalize_url(link['href'], base_url)
+                    if url and url not in processed_urls and not should_skip_url(url):
+                        nav_links.append((url, link.get_text(strip=True), current_depth))
+                        processed_urls.add(url)
+
+        return nav_links
+
+
+class ModernGitBookExtractor(NavExtractor):
+    """Extractor for modern GitBook sites (Next.js-based with Tailwind CSS)."""
+
+    def can_handle(self, soup: BeautifulSoup) -> bool:
+        # Check for table-of-contents ID
+        toc = soup.find(id="table-of-contents")
+        if toc:
+            return True
+
+        # Check for data-testid attribute
+        toc = soup.find(attrs={"data-testid": "table-of-contents"})
+        if toc:
+            return True
+
+        # Check for toclink class (GitBook's link styling)
+        toclink = soup.find(class_=re.compile(r'\btoclink\b'))
+        if toclink:
+            return True
+
+        # Check for group/toclink pattern (Tailwind group variant)
+        for elem in soup.find_all(class_=True):
+            classes = elem.get('class', [])
+            if isinstance(classes, list):
+                if any('group/toclink' in c for c in classes):
+                    return True
+
+        return False
+
+    def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
+        nav_links = []
+
+        # Find the table of contents container
+        toc = soup.find(id="table-of-contents")
+        if not toc:
+            toc = soup.find(attrs={"data-testid": "table-of-contents"})
+        if not toc:
+            # Fall back to finding aside with toclink children
+            for aside in soup.find_all('aside'):
+                if aside.find(class_=re.compile(r'\btoclink\b')):
+                    toc = aside
+                    break
+
+        if not toc:
+            return nav_links
+
+        # Process the TOC structure
+        nav_links.extend(self._process_toc(toc, base_url, processed_urls, depth=0))
+
+        return nav_links
+
+    def _is_section_header(self, elem) -> bool:
+        """Check if element is a section header based on styling classes."""
+        classes = elem.get('class', [])
+        if isinstance(classes, list):
+            class_str = ' '.join(classes)
+        else:
+            class_str = str(classes)
+
+        # Section headers typically have uppercase + tracking-wide + font-semibold
+        header_indicators = ['uppercase', 'tracking-wide', 'font-semibold']
+        matches = sum(1 for ind in header_indicators if ind in class_str)
+
+        # Also check for sticky positioning (section headers are often sticky)
+        if 'sticky' in class_str and matches >= 1:
+            return True
+
+        return matches >= 2
+
+    def _process_toc(self, container, base_url: str, processed_urls: Set[str], depth: int) -> List[tuple]:
+        nav_links = []
+
+        # First, look for section headers (divs with section header styling)
+        for child in container.children:
+            if not hasattr(child, 'name') or child.name is None:
+                continue
+
+            # Check if this is a section header
+            if child.name in ['div', 'span'] and self._is_section_header(child):
+                title = child.get_text(strip=True)
+                if title and len(title) > 1:
+                    nav_links.append((None, title, depth))
+                continue
+
+            # Check if this is a list item containing a section header
+            if child.name == 'li':
+                header_elem = child.find(lambda tag: tag.name in ['div', 'span'] and self._is_section_header(tag))
+                if header_elem:
+                    title = header_elem.get_text(strip=True)
+                    if title and len(title) > 1:
+                        nav_links.append((None, title, depth))
+
+                    # Process children of this section (links in nested ul/div)
+                    for nested in child.find_all(['ul', 'div'], recursive=False):
+                        if nested != header_elem:
+                            nav_links.extend(self._process_toc(nested, base_url, processed_urls, depth + 1))
+                    continue
+
+                # Regular link item
+                link = child.find('a', href=True, recursive=False)
+                if not link:
+                    link = child.find('a', href=True)
+
+                if link:
+                    classes = link.get('class', [])
+                    class_str = ' '.join(classes) if isinstance(classes, list) else str(classes)
+
+                    # Check for toclink class or that it's a navigation link
+                    if 'toclink' in class_str or 'group/toclink' in class_str or link.find_parent(id="table-of-contents"):
+                        url = normalize_url(link['href'], base_url)
+                        if url and url not in processed_urls and not should_skip_url(url):
+                            nav_links.append((url, link.get_text(strip=True), depth))
+                            processed_urls.add(url)
+
+            # Process nested ul elements
+            elif child.name == 'ul':
+                nav_links.extend(self._process_toc(child, base_url, processed_urls, depth))
+
+            # Process nested divs that might contain more nav items
+            elif child.name == 'div':
+                # Check if this div contains toclinks
+                if child.find(class_=re.compile(r'toclink')):
+                    nav_links.extend(self._process_toc(child, base_url, processed_urls, depth))
+
+        return nav_links
+
+
 class FallbackExtractor(NavExtractor):
     """Fallback extractor that finds all same-domain links."""
 
@@ -298,8 +521,16 @@ class GitbookDownloader:
         self.pages = {}  # Store page titles and content
         self.content_hash = {}  # Track content hashes
         self.has_global_nav = False  # True for sites like Mintlify where nav is identical on all pages
+        self.nav_preserves_order = False  # True for extractors that produce reliable nav ordering
         # Navigation extractors in priority order
-        self.extractors = [MintlifyExtractor(), VocsExtractor(), GitBookExtractor(), FallbackExtractor()]
+        self.extractors = [
+            MintlifyExtractor(),
+            VocsExtractor(),
+            DocusaurusExtractor(),
+            ModernGitBookExtractor(),
+            GitBookExtractor(),
+            FallbackExtractor()
+        ]
 
     async def download(self):
         """Main download method"""
@@ -566,9 +797,9 @@ class GitbookDownloader:
         markdown_parts.append("# Table of Contents\n")
         # For single-page docs, include h2 headings for richer ToC
         include_h2 = len(self.pages) == 1
-        # For sites with global nav (Mintlify), pages are already in correct order from nav extraction
-        # For other sites (Vocs, etc.), sort by URL structure to group related pages
-        if self.has_global_nav:
+        # For sites with reliable nav ordering, preserve extraction order for TOC
+        # For other sites, sort by URL structure to group related pages
+        if self.has_global_nav or self.nav_preserves_order:
             sorted_pages = sorted(self.pages.values(), key=lambda x: x["index"])
         else:
             sorted_pages = sorted(self.pages.values(), key=self._get_page_sort_key)
@@ -654,9 +885,15 @@ class GitbookDownloader:
 
             for extractor in self.extractors:
                 if extractor.can_handle(soup):
-                    # Set global nav flag for Mintlify sites
+                    # Set flags based on extractor type:
+                    # - has_global_nav: sidebar is identical on all pages (skip re-extraction)
+                    # - nav_preserves_order: navigation order should be used for TOC sorting
                     if isinstance(extractor, MintlifyExtractor):
                         self.has_global_nav = True
+                        self.nav_preserves_order = True
+                    elif isinstance(extractor, (DocusaurusExtractor, VocsExtractor, ModernGitBookExtractor)):
+                        # These extractors produce reliable nav ordering but may have collapsed sections
+                        self.nav_preserves_order = True
                     nav_links = extractor.extract(soup, self.base_url, processed_urls)
                     if nav_links:
                         # For Vocs sites with collapsed sections, also extract content links
