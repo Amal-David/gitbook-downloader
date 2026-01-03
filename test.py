@@ -21,9 +21,9 @@ DOCS = [
     ["https://noir-lang.org/docs", "noir-docs.md"],
     ["https://docs.zama.org/protocol", "zama-protocol-docs.md"],
     ["https://docs.zama.org/protocol/solidity-guides", "zama-solidity-docs.md"],
-    ["https://docs.zama.org/protocol/relayer-sdk-guides", "zama-relayer-sdk-docs.md"],
-    ["https://docs.zama.org/protocol/examples", "zama-examples-docs.md"],
-    ["https://docs.zama.org/protocol/zama-protocol-litepaper", "zama-protocol-litepaper.md"],
+    # ["https://docs.zama.org/protocol/relayer-sdk-guides", "zama-relayer-sdk-docs.md"],
+    # ["https://docs.zama.org/protocol/examples", "zama-examples-docs.md"],
+    # ["https://docs.zama.org/protocol/zama-protocol-litepaper", "zama-protocol-litepaper.md"],
 ]
 
 
