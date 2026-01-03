@@ -1,5 +1,13 @@
 # GitBook Downloader Test & Fix Prompt
 
+## Prerequisites
+
+**Before starting, read the README.md file entirely** to understand:
+- Supported platforms and their extractors
+- Features and architecture
+- Known limitations and their causes
+- How to add new extractors
+
 ## Task Overview
 
 Run `test.py` to download all documentation sites, then verify that:
@@ -40,12 +48,12 @@ Note: Some screenshots may not show fully expanded navigation or all categories.
 ### Extractor Classes (in priority order)
 | Extractor | Lines | Target Sites |
 |-----------|-------|--------------|
-| `MintlifyExtractor` | ~78-110 | Mintlify docs (MetaDAO) |
-| `VocsExtractor` | ~144-222 | Vocs docs (ZAMM, MetaLeX) |
-| `DocusaurusExtractor` | ~225-319 | Docusaurus v2/v3 (Aztec, Noir) |
-| `ModernGitBookExtractor` | ~322-445 | Next.js GitBook (GMTribe, Zama) |
-| `GitBookExtractor` | ~113-141 | Legacy GitBook |
-| `FallbackExtractor` | ~448-500 | Content link extraction fallback |
+| `MintlifyExtractor` | ~166-200 | Mintlify docs (MetaDAO) |
+| `VocsExtractor` | ~232-328 | Vocs docs (ZAMM, MetaLeX) |
+| `DocusaurusExtractor` | ~329-433 | Docusaurus v2/v3 (Aztec, Noir) |
+| `ModernGitBookExtractor` | ~434-559 | Next.js GitBook (GMTribe, Zama) |
+| `GitBookExtractor` | ~201-231 | Legacy GitBook |
+| `FallbackExtractor` | ~560-610 | Content link extraction fallback |
 
 ### Important Flags
 - `has_global_nav` - True for sites where sidebar is identical on all pages (skip re-extraction)
@@ -56,6 +64,12 @@ Note: Some screenshots may not show fully expanded navigation or all categories.
 - `_follow_nav_links()` - Fetches pages and recursively extracts sub-navigation
 - `_generate_markdown()` - Generates final markdown with TOC and content
 - `_get_page_sort_key()` - URL-based sorting for sites without reliable nav order
+
+### URL Filtering Functions
+- `normalize_url()` - Converts relative URLs to absolute, strips fragments
+- `should_skip_url()` - Filters mailto:, images, PDFs, api-docs
+- `is_different_version_path()` - Detects version paths like `/nightly/`, `/next/`
+- `is_different_doc_section()` - Detects different doc sections like `/developers/` vs `/operators/`
 
 ## Verification Checklist
 
@@ -146,23 +160,45 @@ All 8 documentation sites should:
 These are inherent limitations of static HTML extraction that may not be fully fixable:
 
 ### 1. Collapsed Navigation (Docusaurus, Vocs)
-- **Symptom**: Nav link titles missing or different from sidebar
+- **Symptom**: Nav items missing from TOC or with different titles
 - **Cause**: JavaScript-rendered collapsed sections aren't in static HTML
-- **Workaround**: Pages are fetched via content links, but title comes from page H1 instead of nav link text
-- **Example**: Noir's "Quick Start" page fetched but may appear with different title
+- **Workaround**: Pages are fetched via content links, title comes from page H1
+- **Example**: Noir's "Quick Start" under "Getting Started" may be missing because the section is collapsed
 
 ### 2. Client-Rendered Navigation (Modern GitBook)
-- **Symptom**: Items appear at end of TOC instead of logical position
-- **Cause**: Navigation rendered client-side; items discovered late in crawl
-- **Workaround**: Items have correct depth but ordering follows discovery order
-- **Example**: Zama Protocol's "FHE library" appears at end instead of under "FHE on blockchain"
+- **Symptom**: Items discovered late may appear at end of TOC
+- **Cause**: Navigation rendered client-side; static HTML has incomplete sidebar
+- **Workaround**: When fewer than 10 items found, fallback extraction supplements with URL-based sorting
+- **Example**: Zama Protocol's FHE sub-items now correctly grouped using URL-based sorting
 
-### 3. Section Entry Pages
-- **Symptom**: Section entry page at same depth as section header
-- **Cause**: URL `/section` has same depth as `/section/item` minus 1
-- **Workaround**: Depth adjustment applied when fallback supplements nav extraction
+### 3. Multiple Sidebar Sections (Docusaurus)
+- **Symptom**: TOC includes items from unrelated documentation areas
+- **Cause**: Docusaurus sites with multiple "docs plugins" show all in sidebar
+- **Workaround**: Start from a more specific URL (e.g., `/developers/` instead of root)
+- **Example**: Aztec docs include both developer docs and node operator sections (Setup, Operation)
 
-### 4. Version Path Filtering
+### 4. Vocs Depth Inconsistency
+- **Symptom**: Expandable items at different depth than non-expandable siblings
+- **Cause**: Different HTML structure for expandable vs non-expandable items
+- **Workaround**: None currently - inherent to Vocs HTML structure
+- **Example**: MetaLeX "BORGs OS" (expandable) at depth 2, "Borg Auth" (non-expandable) at depth 1
+
+### 5. Version Path Filtering
 - **Symptom**: Some version-specific pages skipped
-- **Cause**: Extractor filters paths like `/nightly/`, `/next/` to avoid duplicates
+- **Cause**: Extractor filters paths like `/nightly/`, `/next/`, `/canary/`
 - **Workaround**: Start from specific version URL if needed
+
+### 6. Doc Section Filtering
+- **Symptom**: Pages from other doc sections not crawled
+- **Cause**: Extractor prevents crawling into different sections (e.g., `/solidity-guides/` from `/protocol/`)
+- **Workaround**: Start from the specific section URL you want to download
+
+## Final Step: Update README.md
+
+After completing all testing and fixes, **update README.md** if you discovered:
+- New known limitations not documented
+- Changes to extractor behavior
+- New workarounds or fixes
+- Updated line numbers or architecture changes
+
+This ensures the documentation stays current for future contributors.

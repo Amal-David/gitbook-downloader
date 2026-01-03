@@ -32,6 +32,8 @@ Extractors are tried in priority order, and the first one that matches handles t
 - **Table of Contents generation**: Creates navigable TOC from extracted pages
 - **Duplicate detection**: Content hashing prevents duplicate pages
 - **Rate limiting**: Built-in delays and retry logic with exponential backoff
+- **Doc section filtering**: Prevents crawling into unrelated documentation areas (e.g., stays in `/developers/` without crawling `/operators/`)
+- **Version path filtering**: Avoids duplicating content from multiple doc versions (e.g., `/nightly/`, `/next/`)
 
 ## Installation
 
@@ -85,6 +87,19 @@ poetry run python test.py
 
 This creates a `tests-N` folder with downloaded documentation from several test sites.
 
+### Test Sites
+
+| Site | Extractor | URL |
+|------|-----------|-----|
+| ZAMM | VocsExtractor | docs.zamm.eth.limo |
+| GMTribe | ModernGitBookExtractor | gmtribe.gitbook.io |
+| MetaDAO | MintlifyExtractor | docs.metadao.fi |
+| MetaLeX | VocsExtractor | metalex-docs.vercel.app |
+| Aztec | DocusaurusExtractor | docs.aztec.network |
+| Noir | DocusaurusExtractor | noir-lang.org/docs |
+| Zama Protocol | ModernGitBookExtractor | docs.zama.org/protocol |
+| Zama Solidity | ModernGitBookExtractor | docs.zama.org/protocol/solidity-guides |
+
 ## Development & Debugging
 
 For coding agents and contributors working on extractor improvements:
@@ -104,14 +119,30 @@ For coding agents and contributors working on extractor improvements:
 
 ## Known Limitations
 
-### Collapsed Navigation
-Sites with JavaScript-rendered collapsed navigation (Docusaurus, Vocs) may not capture all nav link titles. Pages are still fetched via content links, but the navigation title may differ from the page's H1.
+### Collapsed Navigation (Docusaurus, Vocs)
+Sites with JavaScript-rendered collapsed navigation may not capture all nav items in the static HTML. The extractor recursively crawls pages to discover content, but:
+- Nav link titles may differ from page H1 headings
+- Items like "Quick Start" under collapsed "Getting Started" sections may be missing from TOC
+- **Example**: Noir docs missing "Quick Start" because it's in a collapsed Docusaurus category
 
-### Client-Rendered Navigation
-Modern GitBook sites render navigation client-side. The extractor supplements with content links, but items discovered late in the crawl may appear at the end of the TOC instead of in their logical position within the hierarchy.
+### Client-Rendered Navigation (Modern GitBook)
+Modern GitBook sites render navigation client-side. When the static sidebar has fewer than 10 items, the extractor supplements with content links and uses URL-based sorting to group related pages.
+- **Example**: Zama Protocol's FHE sub-items (library, host contracts, etc.) are correctly grouped under "FHE on blockchain" using URL-based sorting
+
+### Multiple Sidebar Sections (Docusaurus)
+Docusaurus sites with multiple "docs plugins" (e.g., developer docs + operator docs) may include items from all sidebars in the initial extraction.
+- **Example**: Aztec docs include both developer docs and node operator sections (Setup, Operation) from the same sidebar
+- **Workaround**: Start from a more specific URL like `/developers/` instead of the root
+
+### Vocs Expandable vs Non-Expandable Items
+Vocs sites may have inconsistent depth for expandable items (with children) vs non-expandable items (simple links) due to different HTML structures.
+- **Example**: MetaLeX "BORGs OS" (expandable) may appear at different depth than "Borg Auth" (non-expandable)
 
 ### Version Path Filtering
-The extractor attempts to avoid crawling multiple versions of the same docs (e.g., `/nightly/`, `/next/`). Some version-specific content may be skipped if it matches these patterns.
+The extractor filters paths like `/nightly/`, `/next/`, `/canary/` to avoid duplicating content from multiple doc versions. Some version-specific content may be skipped.
+
+### Doc Section Filtering
+The extractor filters URLs that go into different documentation sections (e.g., `/solidity-guides/` when starting from `/protocol/`). Recognized section prefixes include: `developers`, `operators`, `nodes`, `guides`, `tutorials`, `api`, `reference`, `solidity-guides`, `relayer-sdk-guides`, `examples`.
 
 ## Adding New Extractors
 

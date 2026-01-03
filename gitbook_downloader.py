@@ -64,6 +64,73 @@ def is_different_version_path(url: str, base_url: str) -> bool:
     return False
 
 
+def is_different_doc_section(url: str, base_url: str) -> bool:
+    """Return True if URL is from a different documentation section.
+
+    For Docusaurus and similar sites that have multiple doc sections (e.g., /developers/,
+    /operators/), this prevents crawling into unrelated sections.
+    """
+    base_path = urlparse(base_url).path.strip("/")
+    url_path = urlparse(url).path.strip("/")
+
+    if not base_path:
+        return False
+
+    # Get the first path segment(s) that define the doc section
+    base_segments = base_path.split("/")
+    url_segments = url_path.split("/")
+
+    if not url_segments:
+        return False
+
+    # Common documentation section prefixes - these indicate distinct doc areas
+    doc_section_prefixes = {"developers", "operators", "nodes", "guides", "tutorials",
+                           "api", "reference", "solidity-guides", "relayer-sdk-guides",
+                           "examples", "zama-protocol-litepaper", "network", "setup",
+                           "operation", "infrastructure", "validator", "sequencer"}
+
+    # Check if base URL has a section prefix
+    base_section = None
+    base_section_idx = -1
+    for i, seg in enumerate(base_segments):
+        if seg.lower() in doc_section_prefixes:
+            base_section = seg.lower()
+            base_section_idx = i
+            break
+
+    # Check if URL has a section prefix
+    url_section = None
+    url_section_idx = -1
+    for i, seg in enumerate(url_segments):
+        if seg.lower() in doc_section_prefixes:
+            url_section = seg.lower()
+            url_section_idx = i
+            break
+
+    # If base has no section prefix but URL does, only filter if URL goes into
+    # a clearly different doc area (not just any section prefix)
+    # This allows /developers/ to be crawled from / but blocks /operators/
+    if base_section is None and url_section is not None:
+        # Don't filter - let the crawl discover the main section
+        # The recursive crawl will then be limited to that section
+        pass
+
+    # If both have section prefixes, they must match
+    if base_section and url_section and base_section != url_section:
+        return True
+
+    # If URL goes deeper into a recognized section that base didn't specify
+    # (e.g., base=/protocol/protocol/, url=/protocol/solidity-guides/)
+    if base_section:
+        # Check if URL has a different section at the same or deeper level
+        for i, seg in enumerate(url_segments):
+            if i > base_section_idx and seg.lower() in doc_section_prefixes:
+                if seg.lower() != base_section:
+                    return True
+
+    return False
+
+
 class NavExtractor(ABC):
     """Abstract base class for navigation extraction strategies."""
 
@@ -224,21 +291,37 @@ class VocsExtractor(NavExtractor):
 
         # Process direct item links in this section
         items_div = section.find("div", class_="vocs_Sidebar_items", recursive=False)
+
+        # Collect nested section containers to avoid processing their links twice
+        nested_section_containers = set()
         if items_div:
-            for link in items_div.find_all("a", class_="vocs_Sidebar_item", href=True, recursive=False):
+            for nested_section in items_div.find_all("section", class_="vocs_Sidebar_section", recursive=True):
+                nested_section_containers.add(id(nested_section))
+
+        if items_div:
+            # Find all links in items_div (including wrapped ones), but exclude those inside nested sections
+            for link in items_div.find_all("a", class_="vocs_Sidebar_item", href=True):
+                # Skip if this link is inside a nested section (will be processed recursively)
+                parent_section = link.find_parent("section", class_="vocs_Sidebar_section")
+                if parent_section and id(parent_section) in nested_section_containers:
+                    continue
+
                 url = normalize_url(link["href"], base_url)
                 if url and url not in processed_urls and not should_skip_url(url):
                     nav_links.append((url, link.get_text(strip=True), child_depth))
                     processed_urls.add(url)
 
-        # Process nested sections (subsections)
+        # Process nested sections (subsections) - both directly under section and inside items_div
+        all_nested_sections = []
         for nested_section in section.find_all("section", class_="vocs_Sidebar_section", recursive=False):
-            nav_links.extend(self._process_vocs_section(nested_section, base_url, processed_urls, child_depth))
-
-        # Also check for nested sections inside items_div
+            all_nested_sections.append(nested_section)
         if items_div:
             for nested_section in items_div.find_all("section", class_="vocs_Sidebar_section", recursive=False):
-                nav_links.extend(self._process_vocs_section(nested_section, base_url, processed_urls, child_depth))
+                if nested_section not in all_nested_sections:
+                    all_nested_sections.append(nested_section)
+
+        for nested_section in all_nested_sections:
+            nav_links.extend(self._process_vocs_section(nested_section, base_url, processed_urls, child_depth))
 
         return nav_links
 
@@ -660,6 +743,11 @@ class GitbookDownloader:
                 if is_different_version_path(link, self.base_url):
                     continue
 
+                # Skip URLs from different documentation sections (e.g., /operators/ when base is /developers/)
+                # This prevents mixing content from unrelated doc sections
+                if is_different_doc_section(link, self.base_url):
+                    continue
+
                 self.status.current_page = page_index
                 self.status.current_url = link
 
@@ -1052,6 +1140,8 @@ class GitbookDownloader:
                             actual_pages = [link for link in nav_links if link[0] is not None]
                             # If we found fewer than 10 actual pages, supplement with content links
                             if len(actual_pages) < 10:
+                                # Don't trust nav order when using fallback - use URL-based sorting
+                                self.nav_preserves_order = False
                                 fallback = FallbackExtractor()
                                 content_links = fallback.extract(soup, self.base_url, processed_urls)
                                 nav_links.extend(content_links)
