@@ -483,6 +483,7 @@ class FallbackExtractor(NavExtractor):
     def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
         nav_links = []
         base_url_normalized = base_url.rstrip("/")
+        base_path = urlparse(base_url_normalized).path.rstrip("/")
 
         for link in soup.find_all("a", href=True):
             url = normalize_url(link.get("href"), base_url)
@@ -498,7 +499,19 @@ class FallbackExtractor(NavExtractor):
                 # Skip navigation buttons (Previous/Next pagination links)
                 if link_text.startswith("Previous") or link_text.startswith("Next"):
                     continue
-                nav_links.append((url, link_text, 0))
+
+                # Infer depth from URL path structure relative to base URL
+                url_path = urlparse(url).path.rstrip("/")
+                if base_path and url_path.startswith(base_path):
+                    relative_path = url_path[len(base_path):].strip("/")
+                else:
+                    relative_path = url_path.strip("/")
+
+                # Depth is number of path segments (e.g., /foo/bar = depth 1, /foo/bar/baz = depth 2)
+                depth = len(relative_path.split("/")) - 1 if relative_path else 0
+                depth = max(0, min(depth, 4))  # Clamp to reasonable range
+
+                nav_links.append((url, link_text, depth))
                 processed_urls.add(url)
 
         return nav_links
@@ -846,10 +859,61 @@ class GitbookDownloader:
             sorted_pages = sorted(self.pages.values(), key=lambda x: x["index"])
         else:
             sorted_pages = sorted(self.pages.values(), key=self._get_page_sort_key)
-        for page in sorted_pages:
+
+        # Pre-filter: identify section headers that have no items following them
+        # A section header is "empty" if:
+        # - When nav_preserves_order: next URL item is at same/shallower depth
+        # - Always: there's another section header immediately following with no URL items between
+        empty_header_indices = set()
+        for i, page in enumerate(sorted_pages):
+            if page.get("url") is None:  # Section header
+                header_depth = page.get("depth", 0)
+                has_children = False
+                next_is_header = True  # Assume empty unless we find a URL item
+
+                # Look ahead for items that belong to this section
+                for j in range(i + 1, len(sorted_pages)):
+                    next_page = sorted_pages[j]
+                    next_depth = next_page.get("depth", 0)
+
+                    if next_page.get("url") is None:
+                        # Another section header
+                        if next_depth <= header_depth:
+                            # Sibling or parent level header - stop here
+                            break
+                        # Nested section header - continue looking
+                        continue
+
+                    # Found a URL item
+                    next_is_header = False
+
+                    if self.has_global_nav or self.nav_preserves_order:
+                        # Strict depth checking when nav order is reliable
+                        if next_depth > header_depth:
+                            has_children = True
+                            break
+                        # Same or shallower depth - not our child
+                        break
+                    else:
+                        # When using fallback, just finding any URL item means section has content
+                        has_children = True
+                        break
+
+                # Empty if no children found (either next is header or strict depth check failed)
+                if not has_children and next_is_header:
+                    empty_header_indices.add(i)
+                elif not has_children and (self.has_global_nav or self.nav_preserves_order):
+                    empty_header_indices.add(i)
+
+        for i, page in enumerate(sorted_pages):
             if page.get("title"):
                 title = page["title"].strip()
                 url = page.get("url")
+
+                # Skip empty section headers
+                if i in empty_header_indices:
+                    continue
+
                 # Section headers deduplicated by title; pages deduplicated by URL
                 # This allows a page to have the same title as a section header
                 if url is None:
@@ -974,7 +1038,10 @@ class GitbookDownloader:
                                 self.nav_preserves_order = False
                                 fallback = FallbackExtractor()
                                 content_links = fallback.extract(soup, self.base_url, processed_urls)
-                                nav_links.extend(content_links)
+                                # Bump fallback depths by 1 since section headers are at depth 0
+                                # and fallback items should nest under them
+                                adjusted_links = [(url, title, depth + 1) for url, title, depth in content_links]
+                                nav_links.extend(adjusted_links)
                             else:
                                 # Nav is complete, preserve order
                                 self.nav_preserves_order = True

@@ -16,7 +16,9 @@ The downloader uses a **plugin-based architecture** with specialized extractors 
 | Extractor | Platforms | Detection |
 |-----------|-----------|-----------|
 | **MintlifyExtractor** | Mintlify docs (e.g., docs.metadao.fi) | `id="navigation-items"` |
-| **VocsExtractor** | Vocs docs (e.g., metalex-docs.vercel.app) | `class="vocs_Sidebar_navigation"` |
+| **VocsExtractor** | Vocs docs (e.g., metalex-docs.vercel.app, docs.zamm.eth.limo) | `class="vocs_Sidebar_navigation"` |
+| **DocusaurusExtractor** | Docusaurus v2/v3 (e.g., docs.aztec.network, noir-lang.org) | `class="menu__list"` + `class="menu__link"` |
+| **ModernGitBookExtractor** | Next.js GitBook (e.g., gmtribe.gitbook.io, docs.zama.org) | `id="table-of-contents"` or `class="toclink"` |
 | **GitBookExtractor** | Traditional GitBook sites | `nav`/`aside` with `ul`/`ol` lists |
 | **FallbackExtractor** | Any site | Extracts all same-domain links |
 
@@ -83,6 +85,34 @@ poetry run python test.py
 
 This creates a `tests-N` folder with downloaded documentation from several test sites.
 
+## Development & Debugging
+
+For coding agents and contributors working on extractor improvements:
+
+| Resource | Purpose |
+|----------|---------|
+| `test.py` | Automated test runner that downloads 8 reference documentation sites |
+| `test-prompt.md` | Structured prompt for coding agents with verification checklist and debugging workflow |
+| `test-screenshots/` | Reference screenshots of expected sidebar/TOC structure for each test site |
+
+### Workflow for Fixing Extractors
+
+1. Run `poetry run python test.py` to generate test output
+2. Compare generated `tests-N/*.md` files against screenshots in `test-screenshots/`
+3. Use `test-prompt.md` as a guide for systematic verification
+4. Fix issues in `gitbook_downloader.py` and re-run tests
+
+## Known Limitations
+
+### Collapsed Navigation
+Sites with JavaScript-rendered collapsed navigation (Docusaurus, Vocs) may not capture all nav link titles. Pages are still fetched via content links, but the navigation title may differ from the page's H1.
+
+### Client-Rendered Navigation
+Modern GitBook sites render navigation client-side. The extractor supplements with content links, but items discovered late in the crawl may appear at the end of the TOC instead of in their logical position within the hierarchy.
+
+### Version Path Filtering
+The extractor attempts to avoid crawling multiple versions of the same docs (e.g., `/nightly/`, `/next/`). Some version-specific content may be skipped if it matches these patterns.
+
 ## Adding New Extractors
 
 To support a new documentation platform, create a class that extends `NavExtractor`:
@@ -117,10 +147,12 @@ The application uses:
 ```
 GitbookDownloader
 ├── NavExtractor (ABC)
-│   ├── MintlifyExtractor  - Mintlify documentation sites
-│   ├── VocsExtractor      - Vocs documentation sites
-│   ├── GitBookExtractor   - Traditional GitBook sites
-│   └── FallbackExtractor  - Generic fallback for any site
+│   ├── MintlifyExtractor      - Mintlify documentation sites
+│   ├── VocsExtractor          - Vocs documentation sites
+│   ├── DocusaurusExtractor    - Docusaurus v2/v3 sites
+│   ├── ModernGitBookExtractor - Next.js GitBook sites
+│   ├── GitBookExtractor       - Traditional GitBook sites
+│   └── FallbackExtractor      - Generic fallback for any site
 ├── _extract_nav_links()   - Runs extractors in priority order
 ├── _follow_nav_links()    - Recursively processes navigation
 ├── _process_page_content() - Extracts and cleans page content

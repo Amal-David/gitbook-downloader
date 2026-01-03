@@ -140,3 +140,29 @@ All 8 documentation sites should:
 2. Have all pages downloaded with readable content
 3. Be usable as context for an LLM without preprocessing
 4. Be readable by a human reviewing the documentation offline
+
+## Known Limitations
+
+These are inherent limitations of static HTML extraction that may not be fully fixable:
+
+### 1. Collapsed Navigation (Docusaurus, Vocs)
+- **Symptom**: Nav link titles missing or different from sidebar
+- **Cause**: JavaScript-rendered collapsed sections aren't in static HTML
+- **Workaround**: Pages are fetched via content links, but title comes from page H1 instead of nav link text
+- **Example**: Noir's "Quick Start" page fetched but may appear with different title
+
+### 2. Client-Rendered Navigation (Modern GitBook)
+- **Symptom**: Items appear at end of TOC instead of logical position
+- **Cause**: Navigation rendered client-side; items discovered late in crawl
+- **Workaround**: Items have correct depth but ordering follows discovery order
+- **Example**: Zama Protocol's "FHE library" appears at end instead of under "FHE on blockchain"
+
+### 3. Section Entry Pages
+- **Symptom**: Section entry page at same depth as section header
+- **Cause**: URL `/section` has same depth as `/section/item` minus 1
+- **Workaround**: Depth adjustment applied when fallback supplements nav extraction
+
+### 4. Version Path Filtering
+- **Symptom**: Some version-specific pages skipped
+- **Cause**: Extractor filters paths like `/nightly/`, `/next/` to avoid duplicates
+- **Workaround**: Start from specific version URL if needed
