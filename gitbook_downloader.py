@@ -289,6 +289,9 @@ class DocusaurusExtractor(NavExtractor):
             if is_category:
                 # Extract category header
                 category_link = li.find('a', class_=re.compile(r'menu__link--sublist|menu__link'))
+                nested_list = li.find('ul', class_=re.compile(r'\bmenu__list\b'))
+                has_nested = nested_list is not None
+
                 if category_link:
                     title = category_link.get_text(strip=True)
                     href = category_link.get('href')
@@ -299,12 +302,15 @@ class DocusaurusExtractor(NavExtractor):
                         if url and url not in processed_urls and not should_skip_url(url):
                             nav_links.append((url, title, current_depth))
                             processed_urls.add(url)
+                        elif title and has_nested:
+                            # URL already processed but has nested items - add as section header
+                            # so nested items have their parent category in the TOC
+                            nav_links.append((None, title, current_depth))
                     elif title:
                         # Non-link category header
                         nav_links.append((None, title, current_depth))
 
                 # Process nested items
-                nested_list = li.find('ul', class_=re.compile(r'\bmenu__list\b'))
                 if nested_list:
                     nav_links.extend(self._process_menu_list(nested_list, base_url, processed_urls, current_depth + 1))
             else:
@@ -630,12 +636,16 @@ class GitbookDownloader:
                             page_data["content"].encode("utf-8")
                         ).hexdigest()
                         if content_hash not in self.content_hash:
+                            # Use nav title if available (more reliable for TOC than page h1)
+                            # e.g., Docusaurus category "Getting Started" vs page h1 "Quick Start"
+                            effective_title = title if title else page_data["title"]
                             self.pages[page_index] = {
                                 "index": page_index,
                                 "depth": depth,
                                 **page_data,
+                                "title": effective_title,  # Override with nav title
                             }
-                            self.status.pages_scraped.append(page_data["title"])
+                            self.status.pages_scraped.append(effective_title)
                             self.content_hash[content_hash] = page_index
                             page_index += 1
 
@@ -791,7 +801,9 @@ class GitbookDownloader:
             return ""
 
         markdown_parts = []
-        seen_titles = set()
+        seen_urls = set()  # Track URLs to avoid duplicate pages in TOC
+        seen_section_headers = set()  # Track section header titles to avoid duplicates
+        seen_titles = set()  # Track titles for content deduplication
 
         # Add table of contents
         markdown_parts.append("# Table of Contents\n")
@@ -806,16 +818,25 @@ class GitbookDownloader:
         for page in sorted_pages:
             if page.get("title"):
                 title = page["title"].strip()
-                if title and title not in seen_titles:
-                    # Use depth for indentation (2 spaces per level)
-                    depth = page.get("depth", 0)
-                    indent = "  " * depth
-                    # Section headers (no URL) shown as bold text, pages as links
-                    if page.get("url") is None:
-                        markdown_parts.append(f"{indent}**{title}**")
-                    else:
-                        markdown_parts.append(f"{indent}- [{title}](#{slugify(title)})")
-                    seen_titles.add(title)
+                url = page.get("url")
+                # Section headers deduplicated by title; pages deduplicated by URL
+                # This allows a page to have the same title as a section header
+                if url is None:
+                    if title in seen_section_headers:
+                        continue
+                    seen_section_headers.add(title)
+                else:
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                # Use depth for indentation (2 spaces per level)
+                depth = page.get("depth", 0)
+                indent = "  " * depth
+                # Section headers (no URL) shown as bold text, pages as links
+                if url is None:
+                    markdown_parts.append(f"{indent}**{title}**")
+                else:
+                    markdown_parts.append(f"{indent}- [{title}](#{slugify(title)})")
                     # Extract h2 headings from content for sub-items
                     if include_h2 and page.get("content"):
                         h2_headings = re.findall(r'^## (.+)$', page["content"], re.MULTILINE)
@@ -891,9 +912,12 @@ class GitbookDownloader:
                     if isinstance(extractor, MintlifyExtractor):
                         self.has_global_nav = True
                         self.nav_preserves_order = True
-                    elif isinstance(extractor, (DocusaurusExtractor, VocsExtractor, ModernGitBookExtractor)):
-                        # These extractors produce reliable nav ordering but may have collapsed sections
+                    elif isinstance(extractor, (DocusaurusExtractor, ModernGitBookExtractor)):
+                        # These extractors produce reliable nav ordering
                         self.nav_preserves_order = True
+                    elif isinstance(extractor, VocsExtractor):
+                        # VocsExtractor: check if sections are collapsed first before setting flag
+                        pass  # Will be set below if nav is complete
                     nav_links = extractor.extract(soup, self.base_url, processed_urls)
                     if nav_links:
                         # For Vocs sites with collapsed sections, also extract content links
@@ -901,7 +925,24 @@ class GitbookDownloader:
                         if isinstance(extractor, VocsExtractor):
                             # Check if we have actual page URLs (not just section headers)
                             actual_pages = [link for link in nav_links if link[0] is not None]
-                            if len(actual_pages) < 5:  # Few visible pages, sections likely collapsed
+                            section_headers = [link for link in nav_links if link[0] is None]
+                            # If there are section headers but few pages, sections are likely collapsed
+                            if section_headers and len(actual_pages) <= len(section_headers) + 3:
+                                # Don't trust nav order when using fallback - use URL-based sorting
+                                self.nav_preserves_order = False
+                                fallback = FallbackExtractor()
+                                content_links = fallback.extract(soup, self.base_url, processed_urls)
+                                nav_links.extend(content_links)
+                            else:
+                                # Nav is complete, preserve order
+                                self.nav_preserves_order = True
+
+                        # For Modern GitBook sites with client-rendered nav, also extract content links
+                        # to find pages not visible in the static sidebar
+                        if isinstance(extractor, ModernGitBookExtractor):
+                            actual_pages = [link for link in nav_links if link[0] is not None]
+                            # If we found fewer than 10 actual pages, supplement with content links
+                            if len(actual_pages) < 10:
                                 fallback = FallbackExtractor()
                                 content_links = fallback.extract(soup, self.base_url, processed_urls)
                                 nav_links.extend(content_links)
