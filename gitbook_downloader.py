@@ -100,11 +100,9 @@ def is_different_doc_section(url: str, base_url: str) -> bool:
 
     # Check if URL has a section prefix
     url_section = None
-    url_section_idx = -1
-    for i, seg in enumerate(url_segments):
+    for seg in url_segments:
         if seg.lower() in doc_section_prefixes:
             url_section = seg.lower()
-            url_section_idx = i
             break
 
     # If base has no section prefix but URL does, only filter if URL goes into
