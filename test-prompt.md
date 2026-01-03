@@ -26,17 +26,69 @@ This creates a `tests-N/` folder (incrementing N) with markdown files for each d
 
 ## Reference Screenshots
 
-Screenshots of expected sidebar/TOC structure are in `test-screenshots/`:
-- `zamm-docs.png` - ZAMM (Vocs)
-- `gmtribe-docs.png` - GMTribe (Modern GitBook)
-- `metadao-docs.png` - MetaDAO (Mintlify)
-- `metalex-docs.png` - MetaLeX (Vocs)
-- `aztec-docs.png` - Aztec (Docusaurus)
-- `noir-docs.png` - Noir (Docusaurus)
-- `zama-protocol-docs.png` - Zama Protocol (Modern GitBook)
-- `zama-solidity-docs.png` - Zama Solidity (Modern GitBook)
+**Use your vision/multimodal capabilities** to view and analyze these screenshots in `test-screenshots/`. Compare the generated TOC against each screenshot to verify structure:
+
+| Screenshot | Site | Extractor |
+|------------|------|-----------|
+| `zamm-docs.png` | ZAMM | VocsExtractor |
+| `gmtribe-docs.png` | GMTribe | ModernGitBookExtractor |
+| `metadao-docs.png` | MetaDAO | MintlifyExtractor |
+| `metalex-docs.png` | MetaLeX | VocsExtractor |
+| `aztec-docs.png` | Aztec | DocusaurusExtractor |
+| `noir-docs.png` | Noir | DocusaurusExtractor |
+| `zama-protocol-docs.png` | Zama Protocol | ModernGitBookExtractor |
+| `zama-solidity-docs.png` | Zama Solidity | ModernGitBookExtractor |
 
 Note: Some screenshots may not show fully expanded navigation or all categories.
+
+## Example Correct Output
+
+### TOC Format Example
+
+A correctly formatted TOC should look like this:
+
+```markdown
+## Table of Contents
+
+**Getting Started**
+  - [Introduction](#introduction)
+  - [Installation](#installation)
+    - [Prerequisites](#prerequisites)
+    - [Quick Start](#quick-start)
+  - [Configuration](#configuration)
+**Core Concepts**
+  - [Architecture](#architecture)
+  - [Components](#components)
+```
+
+Key formatting rules:
+- Section headers: `**Bold Text**` at depth 0, no link
+- Page links: `- [Title](#anchor)` with 2-space indentation per depth level
+- Sub-items: Additional 2-space indent under parent
+
+### Content Format Example
+
+Each page should be formatted as:
+
+```markdown
+---
+
+# Page Title
+
+Source: https://example.com/docs/page-name
+
+Main content here with proper markdown formatting...
+
+## Subheading
+
+More content...
+
+```python
+code_example = "properly fenced"
+```
+
+---
+```
 
 ## Codebase Structure
 
@@ -46,14 +98,17 @@ Note: Some screenshots may not show fully expanded navigation or all categories.
 - `cli.py` - CLI entry point
 
 ### Extractor Classes (in priority order)
-| Extractor | Lines | Target Sites |
-|-----------|-------|--------------|
-| `MintlifyExtractor` | ~166-200 | Mintlify docs (MetaDAO) |
-| `VocsExtractor` | ~232-328 | Vocs docs (ZAMM, MetaLeX) |
-| `DocusaurusExtractor` | ~329-433 | Docusaurus v2/v3 (Aztec, Noir) |
-| `ModernGitBookExtractor` | ~434-559 | Next.js GitBook (GMTribe, Zama) |
-| `GitBookExtractor` | ~201-231 | Legacy GitBook |
-| `FallbackExtractor` | ~560-610 | Content link extraction fallback |
+
+| Extractor | Target Sites | Key Method | Detection |
+|-----------|--------------|------------|-----------|
+| `MintlifyExtractor` | Mintlify (MetaDAO) | `extract_links()` | `mintlify` in scripts |
+| `VocsExtractor` | Vocs (ZAMM, MetaLeX) | `extract_links()` | `vocs` sidebar class |
+| `DocusaurusExtractor` | Docusaurus (Aztec, Noir) | `extract_links()` | `docusaurus` meta tag |
+| `ModernGitBookExtractor` | Next.js GitBook (GMTribe, Zama) | `extract_links()` | `gitbook-` classes |
+| `GitBookExtractor` | Legacy GitBook | `extract_links()` | `.book-summary` element |
+| `FallbackExtractor` | Any (last resort) | `extract_links()` | Always matches |
+
+To find an extractor in code: `grep -n "class MintlifyExtractor" gitbook_downloader.py`
 
 ### Important Flags
 - `has_global_nav` - True for sites where sidebar is identical on all pages (skip re-extraction)
@@ -73,41 +128,27 @@ Note: Some screenshots may not show fully expanded navigation or all categories.
 
 ## Verification Checklist
 
-### 1. TOC Verification (compare against screenshots)
+### Tier 1: Blocking Issues (must fix)
 
-For each generated markdown file, verify:
+- [ ] **TOC Order** - Items appear in same order as sidebar screenshot
+- [ ] **No Missing Pages** - All visible navigation items from screenshot are present
+- [ ] **Content Extracted** - Pages have actual content, not just navigation/footer
 
-- [ ] **Order** - Items appear in same order as sidebar screenshot
-- [ ] **Indentation** - Hierarchy levels match (sections at depth 0, items at depth 1, sub-items at depth 2, etc.)
-- [ ] **Section Headers** - Section names appear as `**Bold Text**` without links
-- [ ] **Page Links** - Pages appear as `- [Title](#anchor)` with proper indentation
-- [ ] **Completeness** - All visible navigation items from screenshot are present
+### Tier 2: Important Issues (should fix)
+
+- [ ] **Correct Indentation** - Hierarchy levels match (depth 0, 1, 2, etc.)
 - [ ] **No Duplicates** - No repeated entries (except section header + same-titled page is OK)
+- [ ] **Clean Content** - No HTML artifacts (`<div>`, `<span>`) or escaped characters
+- [ ] **Proper Markdown** - Headers, lists, code blocks formatted correctly
 
-### 2. Content Verification
+### Tier 3: Polish (fix if time permits)
 
-For each page in the markdown, verify:
+- [ ] **Section Headers** - Section names appear as `**Bold Text**` without links
+- [ ] **Source URLs** - Each page has `Source: https://...` after title
+- [ ] **Code Fencing** - Code blocks have language hints (```python, ```js)
+- [ ] **Table Formatting** - Tables in markdown, not HTML
 
-- [ ] **Human Readable**
-  - Clean prose without HTML artifacts or escaped characters
-  - Proper markdown formatting (headers, lists, code blocks, links)
-  - No broken or malformed markdown syntax
-  - Images referenced with proper markdown syntax (even if not downloadable)
-
-- [ ] **LLM Readable**
-  - Clear section boundaries with `# Title` headers
-  - Source URL included after each title: `Source: https://...`
-  - Content separated by `---` dividers
-  - No excessive whitespace or formatting noise
-  - Code blocks properly fenced with language hints where applicable
-  - Tables formatted in markdown (not HTML)
-
-- [ ] **Content Integrity**
-  - Main content extracted (not just navigation/footer)
-  - No truncated or missing sections
-  - Technical content (code examples, API references) preserved accurately
-
-### 3. Common Issues to Watch For
+### Common Issues Reference
 
 | Issue | Symptom | Likely Cause |
 |-------|---------|--------------|
@@ -120,10 +161,34 @@ For each page in the markdown, verify:
 | HTML in content | Raw `<div>`, `<span>` tags | Content extraction not using proper selectors |
 | Broken markdown | Malformed syntax | Edge cases in content conversion |
 
+## Handling Failures
+
+### Network/Site Issues
+
+| Issue | How to Detect | Action |
+|-------|---------------|--------|
+| Site down | Connection refused, 5xx errors | Skip site, note in output, don't count as extractor bug |
+| Rate limited | 429 errors, connection throttled | Add delays between requests or retry later |
+| Timeout | Requests hanging >60s | Check if site has excessive pages (>500), may need pagination |
+| SSL errors | Certificate verification failed | Check if site URL changed or cert expired |
+
+### When to Stop Trying
+
+- **Stop fixing** if you've spent >30 minutes on a single issue without progress
+- **Document as limitation** if the issue is inherent to static HTML extraction (JS-rendered content)
+- **Ask for help** if the fix requires architectural changes to the extractor system
+
+### Partial Success is OK
+
+A site can pass verification even with minor issues:
+- A few pages with slightly different titles (H1 vs nav text) - acceptable
+- Missing deeply nested items from collapsed JS menus - document as limitation
+- Extra pages from related sections - acceptable if core content is correct
+
 ## Iteration Process
 
 1. **Run tests**: `poetry run python test.py`
-2. **Compare TOCs**: Check each `tests-N/*.md` file against corresponding screenshot
+2. **Compare TOCs**: Use vision to compare each `tests-N/*.md` file against corresponding screenshot
 3. **Check content**: Read through content sections for readability issues
 4. **Identify extractor**: Determine which extractor handles the problematic site
 5. **Debug extraction**: Add logging or test specific URLs in isolation
@@ -142,7 +207,15 @@ import asyncio
 async def test():
     downloader = GitbookDownloader('https://example.com/docs/', False)
     md = await downloader.download()
-    print(md[:5000])  # Preview output
+
+    # Preview just the TOC
+    toc_end = md.find('\n---\n')
+    print("=== TOC ===")
+    print(md[:toc_end])
+
+    # Preview first page content
+    print("\n=== FIRST PAGE ===")
+    print(md[toc_end:toc_end+2000])
 
 asyncio.run(test())
 ```
@@ -150,7 +223,7 @@ asyncio.run(test())
 ## Success Criteria
 
 All 8 documentation sites should:
-1. Have TOC structure matching their sidebar screenshots
+1. Have TOC structure matching their sidebar screenshots (Tier 1 issues resolved)
 2. Have all pages downloaded with readable content
 3. Be usable as context for an LLM without preprocessing
 4. Be readable by a human reviewing the documentation offline
@@ -193,12 +266,30 @@ These are inherent limitations of static HTML extraction that may not be fully f
 - **Cause**: Extractor prevents crawling into different sections (e.g., `/solidity-guides/` from `/protocol/`)
 - **Workaround**: Start from the specific section URL you want to download
 
-## Final Step: Update README.md
+## Final Steps: Update Documentation
+
+### 1. Update README.md
 
 After completing all testing and fixes, **update README.md** if you discovered:
 - New known limitations not documented
 - Changes to extractor behavior
 - New workarounds or fixes
-- Updated line numbers or architecture changes
+- Architecture changes
 
 This ensures the documentation stays current for future contributors.
+
+### 2. Update This Prompt File (test-prompt.md)
+
+**Critical**: Before finishing, review and update this prompt file itself with essential information that would help future runs be more effective:
+
+| What to Update | When to Update |
+|----------------|----------------|
+| **Extractor table** | If you added a new extractor class or changed detection logic |
+| **Test site list** | If `test.py` URLs changed or new sites were added |
+| **Screenshot list** | If new reference screenshots were added to `test-screenshots/` |
+| **Known limitations** | If you discovered new inherent limitations |
+| **Example output** | If the output format changed |
+
+Focus on updating the current information in the prompt file, not adding new information, since the coding agent will already have enough updated information from the README.md file.
+
+**Why this matters**: This prompt file is used by coding agents to understand the task. Outdated information causes agents to waste time or make incorrect assumptions. Keeping this file accurate improves the success rate of future automated runs.
