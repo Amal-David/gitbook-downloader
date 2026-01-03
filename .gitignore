@@ -15,6 +15,7 @@ downloads/
 # Markdown files except README
 *.md
 !README.md
+!test-prompt.md
 
 # IDE
 .vscode/
