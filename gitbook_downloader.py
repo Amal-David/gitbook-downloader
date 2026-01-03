@@ -43,6 +43,27 @@ def should_skip_url(url: str) -> bool:
     return any(skip in url for skip in skip_patterns)
 
 
+def is_different_version_path(url: str, base_url: str) -> bool:
+    """Return True if URL is from a different version path (e.g., /nightly/, /v2/).
+
+    This prevents crawling multiple versions of the same docs which causes duplicates.
+    """
+    # Common version path patterns in documentation sites
+    version_patterns = ["/nightly/", "/canary/", "/next/", "/latest/", "/testnet/"]
+
+    base_path = urlparse(base_url).path
+    url_path = urlparse(url).path
+
+    for pattern in version_patterns:
+        url_has_pattern = pattern in url_path
+        base_has_pattern = pattern in base_path
+        # Skip if URL has version pattern but base doesn't (or vice versa)
+        if url_has_pattern != base_has_pattern:
+            return True
+
+    return False
+
+
 class NavExtractor(ABC):
     """Abstract base class for navigation extraction strategies."""
 
@@ -246,13 +267,15 @@ class DocusaurusExtractor(NavExtractor):
         if not sidebar:
             return nav_links
 
-        # Find top-level menu lists
+        # Find top-level menu lists - only take the first one to avoid duplicate
+        # version sidebars (e.g., Aztec has multiple version docs)
         menu_lists = sidebar.find_all('ul', class_=re.compile(r'\bmenu__list\b'), recursive=False)
         if not menu_lists:
             menu_lists = sidebar.find_all('ul', class_=re.compile(r'\bmenu__list\b'))
 
-        for menu_list in menu_lists:
-            nav_links.extend(self._process_menu_list(menu_list, base_url, processed_urls, depth=0))
+        # Only process the first menu list to avoid duplicates from multiple versions
+        if menu_lists:
+            nav_links.extend(self._process_menu_list(menu_lists[0], base_url, processed_urls, depth=0))
 
         return nav_links
 
@@ -472,6 +495,9 @@ class FallbackExtractor(NavExtractor):
 
             link_text = link.get_text(strip=True)
             if link_text and len(link_text) > 1:  # Skip icons/separators
+                # Skip navigation buttons (Previous/Next pagination links)
+                if link_text.startswith("Previous") or link_text.startswith("Next"):
+                    continue
                 nav_links.append((url, link_text, 0))
                 processed_urls.add(url)
 
@@ -614,6 +640,11 @@ class GitbookDownloader:
                             if depth > page_data.get('depth', 0):
                                 self.pages[page_idx]['depth'] = depth
                             break
+                    continue
+
+                # Skip URLs from different version paths (e.g., /nightly/ when base is stable)
+                # This prevents duplicating content from multiple doc versions
+                if is_different_version_path(link, self.base_url):
                     continue
 
                 self.status.current_page = page_index
@@ -840,10 +871,21 @@ class GitbookDownloader:
                     # Extract h2 headings from content for sub-items
                     if include_h2 and page.get("content"):
                         h2_headings = re.findall(r'^## (.+)$', page["content"], re.MULTILINE)
+                        current_section_depth = 0  # Track depth based on numbered sections
                         for h2 in h2_headings:
                             h2_clean = h2.strip()
                             if h2_clean:
-                                markdown_parts.append(f"  - [{h2_clean}](#{slugify(h2_clean)})")
+                                # Determine depth from numbered prefix (e.g., "1" = depth 1, "1.1" = depth 2)
+                                number_match = re.match(r'^(\d+(?:\.\d+)*)\s', h2_clean)
+                                if number_match:
+                                    number_parts = number_match.group(1).split('.')
+                                    h2_depth = len(number_parts)  # "1" = 1, "1.1" = 2, "1.1.1" = 3
+                                    current_section_depth = h2_depth
+                                else:
+                                    # Non-numbered heading: nest under current section
+                                    h2_depth = current_section_depth + 1
+                                h2_indent = "  " * h2_depth
+                                markdown_parts.append(f"{h2_indent}- [{h2_clean}](#{slugify(h2_clean)})")
 
         markdown_parts.append("\n---\n")
 
