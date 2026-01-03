@@ -873,59 +873,48 @@ class GitbookDownloader:
 
         This groups pages by URL prefix and ensures:
         - Root and top-level pages come first
-        - Section headers are placed at the start of their section
+        - Pages are grouped by their first path segment (section)
         - Children appear immediately after their parent
+        - Section headers are placed at the start of their section
         """
-        # Section order mapping - used for both URLs and headers
-        section_prefixes = {"borg": 2, "cybercorps": 3, "cyberdeals": 4, "cybernetic-law": 5}
-
         url = page.get("url")
+        base_path = urlparse(self.base_url).path.strip("/")
+
         if url:
             parsed = urlparse(url)
-            path = parsed.path.strip("/")
-            segments = path.split("/") if path else []
+            full_path = parsed.path.strip("/")
 
-            if not segments or not path:
+            # Get path relative to base URL
+            if base_path and full_path.startswith(base_path):
+                relative_path = full_path[len(base_path):].strip("/")
+            else:
+                relative_path = full_path
+
+            segments = relative_path.split("/") if relative_path else []
+
+            if not segments or not relative_path:
                 # Root page: sort first
-                return (0, "", "")
+                return (0, "", "", "")
 
-            prefix = segments[0]
+            # Use first path segment as section grouping key
+            # This naturally groups /protocol/*, /developer/*, /examples/* etc.
+            first_segment = segments[0]
 
-            # Check if this is a section (either entry point like /cybercorps or nested like /cybercorps/*)
-            if prefix in section_prefixes:
-                order = section_prefixes[prefix]
-                # Section entry points (single segment like /cybercorps) sort right after section header
-                sort_path = path if len(segments) > 1 else f"{prefix}/!"  # ! sorts before letters
-                return (order, sort_path, "")
-            else:
-                # Top-level page (e.g., /faq, /key-terms): sort after root, before sections
-                return (1, path, "")
+            # Sort key: (1=non-root, section_name, full_path, "")
+            # This groups all pages by section alphabetically, then sorts within section by path
+            return (1, first_segment, relative_path, "")
         else:
-            # Section header - try to infer prefix from title
+            # Section header (no URL) - try to place it before its section's pages
             title = page.get("title", "").lower()
-            depth = page.get("depth", 0)
 
-            # Map section titles to their section order
-            # Main section headers (depth 0)
-            if depth == 0:
-                if "borg" in title and "cybercorp" not in title:
-                    return (2, "", "")  # Empty path sorts before any borg/* path
-                elif "cybercorp" in title:
-                    return (3, "", "")
-                elif "cyberdeal" in title:
-                    return (4, "", "")
-                elif "cybernetic" in title or ("law" in title and "cybernetic" not in title):
-                    return (5, "", "")
-            # Subsection headers (depth > 0, like "BORG Types", "BORG Command Center")
-            else:
-                if "borg" in title:
-                    # Place subsection headers after other items in their parent section
-                    return (2, "zzz_" + title, "")
-                elif "cybercorp" in title:
-                    return (3, "zzz_" + title, "")
+            # Try to infer section from title (remove emojis and special chars)
+            # e.g., "🤖 BORGs" -> "borgs", "Developer" -> "developer"
+            clean_title = re.sub(r'[^\w\s]', '', title).strip().lower()
+            words = clean_title.split()
+            section_key = words[0] if words else ""
 
-            # Unknown section header, sort by original index
-            return (1, f"_header_{page.get('index', 0):04d}", "")
+            # Section headers sort before their pages (empty string sorts before any path)
+            return (1, section_key, "", title)
 
     def _generate_markdown(self):
         """Generate markdown content from downloaded pages"""
