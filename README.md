@@ -57,6 +57,15 @@ Example:
 poetry run python cli.py download https://docs.example.com/ -o docs.md
 ```
 
+#### Downloading a specific section
+
+Use the `--section-only` / `-s` flag to download only pages within a specific documentation section:
+```bash
+poetry run python cli.py download "https://docs.uniswap.org/contracts/liquidity-launchpad/Overview" --section-only -o liquidity-launchpad.md
+```
+
+This restricts crawling to URLs sharing the same path prefix as the starting URL (e.g., `/contracts/liquidity-launchpad/`), useful for downloading just one section of a large documentation site.
+
 ### Using Web Interface
 
 1. Start the web server:

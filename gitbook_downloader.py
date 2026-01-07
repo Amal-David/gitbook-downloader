@@ -365,7 +365,15 @@ class DocusaurusExtractor(NavExtractor):
         in_section = False  # Track if we're inside a named section
 
         # Find all list items (both menu__list-item and sidebar-title items)
-        for li in menu_list.find_all('li', recursive=False):
+        # Handle both direct <li> children and <li> inside <div> wrappers (Uniswap docs pattern)
+        direct_lis = menu_list.find_all('li', recursive=False)
+        if not direct_lis:
+            # Check for <li> inside direct <div> children (e.g., <ul><div><li>...</li></div></ul>)
+            direct_lis = []
+            for child in menu_list.children:
+                if hasattr(child, 'name') and child.name == 'div':
+                    direct_lis.extend(child.find_all('li', recursive=False))
+        for li in direct_lis:
             classes = li.get('class', [])
             class_str = ' '.join(classes) if isinstance(classes, list) else classes
 
@@ -633,11 +641,19 @@ class DownloadStatus:
 
 
 class GitbookDownloader:
-    def __init__(self, url, native_md: bool):
+    def __init__(self, url, native_md: bool, section_only: bool = False):
         # Preserve trailing slash so urljoin treats base_url as a directory
         # This prevents dropping path prefixes like /scf-handbook when joining relative URLs
         self.base_url = url.rstrip("/") + "/"
         self.native_md = native_md
+        self.section_only = section_only
+        # Extract section prefix for filtering when section_only is enabled
+        if section_only:
+            path = urlparse(url).path.rstrip("/")
+            # Remove last segment (e.g., /Overview) to get section prefix
+            self.section_prefix = "/".join(path.split("/")[:-1])
+        else:
+            self.section_prefix = None
         self.status = DownloadStatus()
         self.session = None
         self.visited_urls = set()
@@ -715,6 +731,10 @@ class GitbookDownloader:
             try:
                 # Handle section headers (title-only, no URL)
                 if link is None:
+                    # Skip section headers when section_only is enabled
+                    # (they may be from parent categories outside our target section)
+                    if self.section_only:
+                        continue
                     self.pages[page_index] = {
                         "index": page_index,
                         "depth": depth,
@@ -746,6 +766,12 @@ class GitbookDownloader:
                 # This prevents mixing content from unrelated doc sections
                 if is_different_doc_section(link, self.base_url):
                     continue
+
+                # Skip URLs outside section when section_only is enabled
+                if self.section_only and self.section_prefix:
+                    link_path = urlparse(link).path
+                    if not link_path.startswith(self.section_prefix):
+                        continue
 
                 self.status.current_page = page_index
                 self.status.current_url = link
