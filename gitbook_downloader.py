@@ -18,6 +18,12 @@ from slugify import slugify
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Regex to match version path segments (e.g., /v1/, /nightly/, /beta/)
+VERSION_PATH_PATTERN = re.compile(
+    r'/(?:v\d+(?:\.\d+)*|nightly|canary|next|latest|testnet|stable|beta|alpha|rc\d*|dev|staging|main|master|trunk|edge|unstable)(?:/|$)',
+    re.IGNORECASE
+)
+
 
 def normalize_url(href: str, base_url: str) -> Optional[str]:
     """Convert href to full URL, strip fragments, normalize slashes.
@@ -41,6 +47,85 @@ def should_skip_url(url: str) -> bool:
     """Return True for mailto:, images, PDFs, etc."""
     skip_patterns = ["mailto:", "tel:", ".pdf", ".jpg", ".png", ".gif", ".svg", "api-docs"]
     return any(skip in url for skip in skip_patterns)
+
+
+def is_different_version_path(url: str, base_url: str) -> bool:
+    """Return True if URL is from a different version path (e.g., /nightly/, /v2/).
+
+    This prevents crawling multiple versions of the same docs which causes duplicates.
+    """
+    base_path = urlparse(base_url).path
+    url_path = urlparse(url).path
+
+    url_has_version = bool(VERSION_PATH_PATTERN.search(url_path))
+    base_has_version = bool(VERSION_PATH_PATTERN.search(base_path))
+
+    return url_has_version != base_has_version
+
+
+def is_different_doc_section(url: str, base_url: str) -> bool:
+    """Return True if URL is from a different documentation section.
+
+    For Docusaurus and similar sites that have multiple doc sections (e.g., /developers/,
+    /operators/), this prevents crawling into unrelated sections.
+    """
+    base_path = urlparse(base_url).path.strip("/")
+    url_path = urlparse(url).path.strip("/")
+
+    if not base_path:
+        return False
+
+    # Get the first path segment(s) that define the doc section
+    base_segments = base_path.split("/")
+    url_segments = url_path.split("/")
+
+    if not url_segments:
+        return False
+
+    # Common documentation section prefixes - these indicate distinct doc areas
+    doc_section_prefixes = {"developers", "operators", "nodes", "guides", "tutorials",
+                           "api", "reference", "solidity-guides", "relayer-sdk-guides",
+                           "examples", "zama-protocol-litepaper", "network", "setup",
+                           "operation", "infrastructure", "validator", "sequencer"}
+
+    # Check if base URL has a section prefix
+    base_section = None
+    base_section_idx = -1
+    for i, seg in enumerate(base_segments):
+        if seg.lower() in doc_section_prefixes:
+            base_section = seg.lower()
+            base_section_idx = i
+            break
+
+    # Check if URL has a section prefix
+    url_section = None
+    for seg in url_segments:
+        if seg.lower() in doc_section_prefixes:
+            url_section = seg.lower()
+            break
+
+    # If base has no section prefix but URL does, only filter if URL goes into
+    # a clearly different doc area (not just any section prefix)
+    # This allows /developers/ to be crawled from / but blocks /operators/
+    if base_section is None and url_section is not None:
+        # Don't filter - let the crawl discover the main section
+        # The recursive crawl will then be limited to that section
+        pass
+
+    # If both have section prefixes, they must match
+    if base_section and url_section and base_section != url_section:
+        return True
+
+    # If URL goes deeper into a recognized section that base didn't specify
+    # (e.g., base=/protocol/protocol/, url=/protocol/solidity-guides/)
+    if base_section:
+        # Check if URL has a different section at the same or deeper level
+        for i, seg in enumerate(url_segments):
+            if i > base_section_idx and seg.lower() in doc_section_prefixes:
+                if seg.lower() != base_section:
+                    return True
+
+    return False
 
 
 class NavExtractor(ABC):
@@ -203,21 +288,276 @@ class VocsExtractor(NavExtractor):
 
         # Process direct item links in this section
         items_div = section.find("div", class_="vocs_Sidebar_items", recursive=False)
+
+        # Collect nested section containers to avoid processing their links twice
+        nested_section_containers = set()
         if items_div:
-            for link in items_div.find_all("a", class_="vocs_Sidebar_item", href=True, recursive=False):
+            for nested_section in items_div.find_all("section", class_="vocs_Sidebar_section", recursive=True):
+                nested_section_containers.add(id(nested_section))
+
+        if items_div:
+            # Find all links in items_div (including wrapped ones), but exclude those inside nested sections
+            for link in items_div.find_all("a", class_="vocs_Sidebar_item", href=True):
+                # Skip if this link is inside a nested section (will be processed recursively)
+                parent_section = link.find_parent("section", class_="vocs_Sidebar_section")
+                if parent_section and id(parent_section) in nested_section_containers:
+                    continue
+
                 url = normalize_url(link["href"], base_url)
                 if url and url not in processed_urls and not should_skip_url(url):
                     nav_links.append((url, link.get_text(strip=True), child_depth))
                     processed_urls.add(url)
 
-        # Process nested sections (subsections)
+        # Process nested sections (subsections) - both directly under section and inside items_div
+        all_nested_sections = []
         for nested_section in section.find_all("section", class_="vocs_Sidebar_section", recursive=False):
-            nav_links.extend(self._process_vocs_section(nested_section, base_url, processed_urls, child_depth))
-
-        # Also check for nested sections inside items_div
+            all_nested_sections.append(nested_section)
         if items_div:
             for nested_section in items_div.find_all("section", class_="vocs_Sidebar_section", recursive=False):
-                nav_links.extend(self._process_vocs_section(nested_section, base_url, processed_urls, child_depth))
+                if nested_section not in all_nested_sections:
+                    all_nested_sections.append(nested_section)
+
+        for nested_section in all_nested_sections:
+            nav_links.extend(self._process_vocs_section(nested_section, base_url, processed_urls, child_depth))
+
+        return nav_links
+
+
+class DocusaurusExtractor(NavExtractor):
+    """Extractor for Docusaurus v2/v3 documentation sites."""
+
+    def can_handle(self, soup: BeautifulSoup) -> bool:
+        # Docusaurus uses Infima CSS with menu__list and menu__link classes
+        menu_list = soup.find(class_=re.compile(r'\bmenu__list\b'))
+        menu_link = soup.find(class_=re.compile(r'\bmenu__link\b'))
+        return menu_list is not None and menu_link is not None
+
+    def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
+        nav_links = []
+
+        # Find the main sidebar navigation
+        sidebar = soup.find('nav', class_=re.compile(r'\bmenu\b'))
+        if not sidebar:
+            sidebar = soup.find('aside', class_=re.compile(r'docSidebar|theme-doc-sidebar'))
+        if not sidebar:
+            # Try finding any element containing menu__list
+            menu_list = soup.find('ul', class_=re.compile(r'\bmenu__list\b'))
+            if menu_list:
+                sidebar = menu_list.parent
+        if not sidebar:
+            return nav_links
+
+        # Find top-level menu lists - only take the first one to avoid duplicate
+        # version sidebars (e.g., Aztec has multiple version docs)
+        menu_lists = sidebar.find_all('ul', class_=re.compile(r'\bmenu__list\b'), recursive=False)
+        if not menu_lists:
+            menu_lists = sidebar.find_all('ul', class_=re.compile(r'\bmenu__list\b'))
+
+        # Only process the first menu list to avoid duplicates from multiple versions
+        if menu_lists:
+            nav_links.extend(self._process_menu_list(menu_lists[0], base_url, processed_urls, depth=0))
+
+        return nav_links
+
+    def _process_menu_list(self, menu_list, base_url: str, processed_urls: Set[str], depth: int) -> List[tuple]:
+        nav_links = []
+        in_section = False  # Track if we're inside a named section
+
+        # Find all list items (both menu__list-item and sidebar-title items)
+        # Handle both direct <li> children and <li> inside <div> wrappers (Uniswap docs pattern)
+        direct_lis = menu_list.find_all('li', recursive=False)
+        if not direct_lis:
+            # Check for <li> inside direct <div> children (e.g., <ul><div><li>...</li></div></ul>)
+            direct_lis = []
+            for child in menu_list.children:
+                if hasattr(child, 'name') and child.name == 'div':
+                    direct_lis.extend(child.find_all('li', recursive=False))
+        for li in direct_lis:
+            classes = li.get('class', [])
+            class_str = ' '.join(classes) if isinstance(classes, list) else classes
+
+            # Check for sidebar-title (section header without link) - Docusaurus custom theme element
+            if 'sidebar-title' in class_str:
+                title_span = li.find('span', class_='sidebar-title')
+                if title_span:
+                    title = title_span.get_text(strip=True)
+                    if title:
+                        nav_links.append((None, title, depth))
+                        in_section = True  # Items after this should be indented
+                continue
+
+            # Skip if not a menu list item
+            if 'menu__list-item' not in class_str:
+                continue
+
+            # Determine current item depth (indent if we're in a named section)
+            current_depth = depth + 1 if in_section else depth
+
+            # Check if this is a category (collapsible section)
+            is_category = 'theme-doc-sidebar-item-category' in class_str or \
+                          li.find(class_=re.compile(r'menu__link--sublist'))
+
+            if is_category:
+                # Extract category header
+                category_link = li.find('a', class_=re.compile(r'menu__link--sublist|menu__link'))
+                nested_list = li.find('ul', class_=re.compile(r'\bmenu__list\b'))
+                has_nested = nested_list is not None
+
+                if category_link:
+                    title = category_link.get_text(strip=True)
+                    href = category_link.get('href')
+
+                    # Category might be a link itself or just a header
+                    if href and href != '#' and not href.startswith('#'):
+                        url = normalize_url(href, base_url)
+                        if url and url not in processed_urls and not should_skip_url(url):
+                            nav_links.append((url, title, current_depth))
+                            processed_urls.add(url)
+                        elif title and has_nested:
+                            # URL already processed but has nested items - add as section header
+                            # so nested items have their parent category in the TOC
+                            nav_links.append((None, title, current_depth))
+                    elif title:
+                        # Non-link category header
+                        nav_links.append((None, title, current_depth))
+
+                # Process nested items
+                if nested_list:
+                    nav_links.extend(self._process_menu_list(nested_list, base_url, processed_urls, current_depth + 1))
+            else:
+                # Regular link item
+                link = li.find('a', class_=re.compile(r'\bmenu__link\b'), href=True)
+                if link:
+                    url = normalize_url(link['href'], base_url)
+                    if url and url not in processed_urls and not should_skip_url(url):
+                        nav_links.append((url, link.get_text(strip=True), current_depth))
+                        processed_urls.add(url)
+
+        return nav_links
+
+
+class ModernGitBookExtractor(NavExtractor):
+    """Extractor for modern GitBook sites (Next.js-based with Tailwind CSS)."""
+
+    def can_handle(self, soup: BeautifulSoup) -> bool:
+        # Check for table-of-contents ID
+        toc = soup.find(id="table-of-contents")
+        if toc:
+            return True
+
+        # Check for data-testid attribute
+        toc = soup.find(attrs={"data-testid": "table-of-contents"})
+        if toc:
+            return True
+
+        # Check for toclink class (GitBook's link styling)
+        toclink = soup.find(class_=re.compile(r'\btoclink\b'))
+        if toclink:
+            return True
+
+        # Check for group/toclink pattern (Tailwind group variant)
+        for elem in soup.find_all(class_=True):
+            classes = elem.get('class', [])
+            if isinstance(classes, list):
+                if any('group/toclink' in c for c in classes):
+                    return True
+
+        return False
+
+    def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
+        nav_links = []
+
+        # Find the table of contents container
+        toc = soup.find(id="table-of-contents")
+        if not toc:
+            toc = soup.find(attrs={"data-testid": "table-of-contents"})
+        if not toc:
+            # Fall back to finding aside with toclink children
+            for aside in soup.find_all('aside'):
+                if aside.find(class_=re.compile(r'\btoclink\b')):
+                    toc = aside
+                    break
+
+        if not toc:
+            return nav_links
+
+        # Process the TOC structure
+        nav_links.extend(self._process_toc(toc, base_url, processed_urls, depth=0))
+
+        return nav_links
+
+    def _is_section_header(self, elem) -> bool:
+        """Check if element is a section header based on styling classes."""
+        classes = elem.get('class', [])
+        if isinstance(classes, list):
+            class_str = ' '.join(classes)
+        else:
+            class_str = str(classes)
+
+        # Section headers typically have uppercase + tracking-wide + font-semibold
+        header_indicators = ['uppercase', 'tracking-wide', 'font-semibold']
+        matches = sum(1 for ind in header_indicators if ind in class_str)
+
+        # Also check for sticky positioning (section headers are often sticky)
+        if 'sticky' in class_str and matches >= 1:
+            return True
+
+        return matches >= 2
+
+    def _process_toc(self, container, base_url: str, processed_urls: Set[str], depth: int) -> List[tuple]:
+        nav_links = []
+
+        # First, look for section headers (divs with section header styling)
+        for child in container.children:
+            if not hasattr(child, 'name') or child.name is None:
+                continue
+
+            # Check if this is a section header
+            if child.name in ['div', 'span'] and self._is_section_header(child):
+                title = child.get_text(strip=True)
+                if title and len(title) > 1:
+                    nav_links.append((None, title, depth))
+                continue
+
+            # Check if this is a list item containing a section header
+            if child.name == 'li':
+                header_elem = child.find(lambda tag: tag.name in ['div', 'span'] and self._is_section_header(tag))
+                if header_elem:
+                    title = header_elem.get_text(strip=True)
+                    if title and len(title) > 1:
+                        nav_links.append((None, title, depth))
+
+                    # Process children of this section (links in nested ul/div)
+                    for nested in child.find_all(['ul', 'div'], recursive=False):
+                        if nested != header_elem:
+                            nav_links.extend(self._process_toc(nested, base_url, processed_urls, depth + 1))
+                    continue
+
+                # Regular link item
+                link = child.find('a', href=True, recursive=False)
+                if not link:
+                    link = child.find('a', href=True)
+
+                if link:
+                    classes = link.get('class', [])
+                    class_str = ' '.join(classes) if isinstance(classes, list) else str(classes)
+
+                    # Check for toclink class or that it's a navigation link
+                    if 'toclink' in class_str or 'group/toclink' in class_str or link.find_parent(id="table-of-contents"):
+                        url = normalize_url(link['href'], base_url)
+                        if url and url not in processed_urls and not should_skip_url(url):
+                            nav_links.append((url, link.get_text(strip=True), depth))
+                            processed_urls.add(url)
+
+            # Process nested ul elements
+            elif child.name == 'ul':
+                nav_links.extend(self._process_toc(child, base_url, processed_urls, depth))
+
+            # Process nested divs that might contain more nav items
+            elif child.name == 'div':
+                # Check if this div contains toclinks
+                if child.find(class_=re.compile(r'toclink')):
+                    nav_links.extend(self._process_toc(child, base_url, processed_urls, depth))
 
         return nav_links
 
@@ -231,6 +571,7 @@ class FallbackExtractor(NavExtractor):
     def extract(self, soup: BeautifulSoup, base_url: str, processed_urls: Set[str]) -> List[tuple]:
         nav_links = []
         base_url_normalized = base_url.rstrip("/")
+        base_path = urlparse(base_url_normalized).path.rstrip("/")
 
         for link in soup.find_all("a", href=True):
             url = normalize_url(link.get("href"), base_url)
@@ -243,7 +584,22 @@ class FallbackExtractor(NavExtractor):
 
             link_text = link.get_text(strip=True)
             if link_text and len(link_text) > 1:  # Skip icons/separators
-                nav_links.append((url, link_text, 0))
+                # Skip navigation buttons (Previous/Next pagination links)
+                if link_text.startswith("Previous") or link_text.startswith("Next"):
+                    continue
+
+                # Infer depth from URL path structure relative to base URL
+                url_path = urlparse(url).path.rstrip("/")
+                if base_path and url_path.startswith(base_path):
+                    relative_path = url_path[len(base_path):].strip("/")
+                else:
+                    relative_path = url_path.strip("/")
+
+                # Depth is number of path segments (e.g., /foo/bar = depth 1, /foo/bar/baz = depth 2)
+                depth = len(relative_path.split("/")) - 1 if relative_path else 0
+                depth = max(0, min(depth, 4))  # Clamp to reasonable range
+
+                nav_links.append((url, link_text, depth))
                 processed_urls.add(url)
 
         return nav_links
@@ -284,11 +640,19 @@ class DownloadStatus:
 
 
 class GitbookDownloader:
-    def __init__(self, url, native_md: bool):
+    def __init__(self, url, native_md: bool, section_only: bool = False):
         # Preserve trailing slash so urljoin treats base_url as a directory
         # This prevents dropping path prefixes like /scf-handbook when joining relative URLs
         self.base_url = url.rstrip("/") + "/"
         self.native_md = native_md
+        self.section_only = section_only
+        # Extract section prefix for filtering when section_only is enabled
+        if section_only:
+            path = urlparse(url).path.rstrip("/")
+            # Remove last segment (e.g., /Overview) to get section prefix
+            self.section_prefix = "/".join(path.split("/")[:-1])
+        else:
+            self.section_prefix = None
         self.status = DownloadStatus()
         self.session = None
         self.visited_urls = set()
@@ -298,8 +662,17 @@ class GitbookDownloader:
         self.pages = {}  # Store page titles and content
         self.content_hash = {}  # Track content hashes
         self.has_global_nav = False  # True for sites like Mintlify where nav is identical on all pages
+        self.nav_preserves_order = False  # True for extractors that produce reliable nav ordering
+        self.sparse_nav = False  # True for sites with collapsed nav where sub-page section headers should be filtered
         # Navigation extractors in priority order
-        self.extractors = [MintlifyExtractor(), VocsExtractor(), GitBookExtractor(), FallbackExtractor()]
+        self.extractors = [
+            MintlifyExtractor(),
+            VocsExtractor(),
+            DocusaurusExtractor(),
+            ModernGitBookExtractor(),
+            GitBookExtractor(),
+            FallbackExtractor()
+        ]
 
     async def download(self):
         """Main download method"""
@@ -357,6 +730,10 @@ class GitbookDownloader:
             try:
                 # Handle section headers (title-only, no URL)
                 if link is None:
+                    # Skip section headers when section_only is enabled
+                    # (they may be from parent categories outside our target section)
+                    if self.section_only:
+                        continue
                     self.pages[page_index] = {
                         "index": page_index,
                         "depth": depth,
@@ -379,6 +756,22 @@ class GitbookDownloader:
                             break
                     continue
 
+                # Skip URLs from different version paths (e.g., /nightly/ when base is stable)
+                # This prevents duplicating content from multiple doc versions
+                if is_different_version_path(link, self.base_url):
+                    continue
+
+                # Skip URLs from different documentation sections (e.g., /operators/ when base is /developers/)
+                # This prevents mixing content from unrelated doc sections
+                if is_different_doc_section(link, self.base_url):
+                    continue
+
+                # Skip URLs outside section when section_only is enabled
+                if self.section_only and self.section_prefix:
+                    link_path = urlparse(link).path
+                    if not link_path.startswith(self.section_prefix):
+                        continue
+
                 self.status.current_page = page_index
                 self.status.current_url = link
 
@@ -399,12 +792,16 @@ class GitbookDownloader:
                             page_data["content"].encode("utf-8")
                         ).hexdigest()
                         if content_hash not in self.content_hash:
+                            # Use nav title if available (more reliable for TOC than page h1)
+                            # e.g., Docusaurus category "Getting Started" vs page h1 "Quick Start"
+                            effective_title = title if title else page_data["title"]
                             self.pages[page_index] = {
                                 "index": page_index,
                                 "depth": depth,
                                 **page_data,
+                                "title": effective_title,  # Override with nav title
                             }
-                            self.status.pages_scraped.append(page_data["title"])
+                            self.status.pages_scraped.append(effective_title)
                             self.content_hash[content_hash] = page_index
                             page_index += 1
 
@@ -413,6 +810,10 @@ class GitbookDownloader:
                             # Skip for sites with global nav (e.g., Mintlify) since all pages have same sidebar
                             if not self.has_global_nav:
                                 subnav_links = await self._extract_nav_links(content)
+                                # For sites with sparse nav (collapsed sections), filter out section headers
+                                # from sub-pages to avoid depth issues (sub-pages have local depths)
+                                if self.sparse_nav:
+                                    subnav_links = [(url, title, depth) for url, title, depth in subnav_links if url is not None]
                                 page_index = await self._follow_nav_links(
                                     subnav_links, page_index
                                 )
@@ -499,60 +900,50 @@ class GitbookDownloader:
         """Generate a sort key for a page based on URL structure.
 
         This groups pages by URL prefix and ensures:
-        - Root and top-level pages come first
+        - Root page comes first
+        - Top-level pages (single path segment) come second
+        - Section-grouped pages come third, grouped by first segment
         - Section headers are placed at the start of their section
-        - Children appear immediately after their parent
         """
-        # Section order mapping - used for both URLs and headers
-        section_prefixes = {"borg": 2, "cybercorps": 3, "cyberdeals": 4, "cybernetic-law": 5}
-
         url = page.get("url")
+        base_path = urlparse(self.base_url).path.strip("/")
+
         if url:
             parsed = urlparse(url)
-            path = parsed.path.strip("/")
-            segments = path.split("/") if path else []
+            full_path = parsed.path.strip("/")
 
-            if not segments or not path:
+            # Get path relative to base URL
+            if base_path and full_path.startswith(base_path):
+                relative_path = full_path[len(base_path):].strip("/")
+            else:
+                relative_path = full_path
+
+            segments = relative_path.split("/") if relative_path else []
+
+            if not segments or not relative_path:
                 # Root page: sort first
-                return (0, "", "")
+                return (0, 0, "", "", "")
 
-            prefix = segments[0]
+            if len(segments) == 1:
+                # Top-level page (e.g., /intro, /faq): sort after root, before sections
+                return (1, 0, relative_path, "", "")
 
-            # Check if this is a section (either entry point like /cybercorps or nested like /cybercorps/*)
-            if prefix in section_prefixes:
-                order = section_prefixes[prefix]
-                # Section entry points (single segment like /cybercorps) sort right after section header
-                sort_path = path if len(segments) > 1 else f"{prefix}/!"  # ! sorts before letters
-                return (order, sort_path, "")
-            else:
-                # Top-level page (e.g., /faq, /key-terms): sort after root, before sections
-                return (1, path, "")
+            # Nested page (e.g., /borg/foo): group by first segment
+            first_segment = segments[0]
+            # Sort key: (1=non-root, 1=nested, section_name, full_path, "")
+            return (1, 1, first_segment, relative_path, "")
         else:
-            # Section header - try to infer prefix from title
+            # Section header (no URL) - try to place it before its section's pages
             title = page.get("title", "").lower()
-            depth = page.get("depth", 0)
 
-            # Map section titles to their section order
-            # Main section headers (depth 0)
-            if depth == 0:
-                if "borg" in title and "cybercorp" not in title:
-                    return (2, "", "")  # Empty path sorts before any borg/* path
-                elif "cybercorp" in title:
-                    return (3, "", "")
-                elif "cyberdeal" in title:
-                    return (4, "", "")
-                elif "cybernetic" in title or ("law" in title and "cybernetic" not in title):
-                    return (5, "", "")
-            # Subsection headers (depth > 0, like "BORG Types", "BORG Command Center")
-            else:
-                if "borg" in title:
-                    # Place subsection headers after other items in their parent section
-                    return (2, "zzz_" + title, "")
-                elif "cybercorp" in title:
-                    return (3, "zzz_" + title, "")
+            # Try to infer section from title (remove emojis and special chars)
+            # e.g., "🤖 BORGs" -> "borgs", "Developer" -> "developer"
+            clean_title = re.sub(r'[^\w\s]', '', title).strip().lower()
+            words = clean_title.split()
+            section_key = words[0] if words else ""
 
-            # Unknown section header, sort by original index
-            return (1, f"_header_{page.get('index', 0):04d}", "")
+            # Section headers sort before their pages within the section group
+            return (1, 1, section_key, "", title)
 
     def _generate_markdown(self):
         """Generate markdown content from downloaded pages"""
@@ -560,38 +951,111 @@ class GitbookDownloader:
             return ""
 
         markdown_parts = []
-        seen_titles = set()
+        seen_urls = set()  # Track URLs to avoid duplicate pages in TOC
+        seen_section_headers = set()  # Track section header titles to avoid duplicates
+        seen_titles = set()  # Track titles for content deduplication
 
         # Add table of contents
         markdown_parts.append("# Table of Contents\n")
         # For single-page docs, include h2 headings for richer ToC
         include_h2 = len(self.pages) == 1
-        # For sites with global nav (Mintlify), pages are already in correct order from nav extraction
-        # For other sites (Vocs, etc.), sort by URL structure to group related pages
-        if self.has_global_nav:
+        # For sites with reliable nav ordering, preserve extraction order for TOC
+        # For other sites, sort by URL structure to group related pages
+        if self.has_global_nav or self.nav_preserves_order:
             sorted_pages = sorted(self.pages.values(), key=lambda x: x["index"])
         else:
             sorted_pages = sorted(self.pages.values(), key=self._get_page_sort_key)
-        for page in sorted_pages:
+
+        # Pre-filter: identify section headers that have no items following them
+        # A section header is "empty" if:
+        # - When nav_preserves_order: next URL item is at same/shallower depth
+        # - Always: there's another section header immediately following with no URL items between
+        empty_header_indices = set()
+        for i, page in enumerate(sorted_pages):
+            if page.get("url") is None:  # Section header
+                header_depth = page.get("depth", 0)
+                has_children = False
+                next_is_header = True  # Assume empty unless we find a URL item
+
+                # Look ahead for items that belong to this section
+                for j in range(i + 1, len(sorted_pages)):
+                    next_page = sorted_pages[j]
+                    next_depth = next_page.get("depth", 0)
+
+                    if next_page.get("url") is None:
+                        # Another section header
+                        if next_depth <= header_depth:
+                            # Sibling or parent level header - stop here
+                            break
+                        # Nested section header - continue looking
+                        continue
+
+                    # Found a URL item
+                    next_is_header = False
+
+                    if self.has_global_nav or self.nav_preserves_order:
+                        # Strict depth checking when nav order is reliable
+                        if next_depth > header_depth:
+                            has_children = True
+                            break
+                        # Same or shallower depth - not our child
+                        break
+                    else:
+                        # When using fallback, just finding any URL item means section has content
+                        has_children = True
+                        break
+
+                # Empty if no children found (either next is header or strict depth check failed)
+                if not has_children and next_is_header:
+                    empty_header_indices.add(i)
+                elif not has_children and (self.has_global_nav or self.nav_preserves_order):
+                    empty_header_indices.add(i)
+
+        for i, page in enumerate(sorted_pages):
             if page.get("title"):
                 title = page["title"].strip()
-                if title and title not in seen_titles:
-                    # Use depth for indentation (2 spaces per level)
-                    depth = page.get("depth", 0)
-                    indent = "  " * depth
-                    # Section headers (no URL) shown as bold text, pages as links
-                    if page.get("url") is None:
-                        markdown_parts.append(f"{indent}**{title}**")
-                    else:
-                        markdown_parts.append(f"{indent}- [{title}](#{slugify(title)})")
-                    seen_titles.add(title)
+                url = page.get("url")
+
+                # Skip empty section headers
+                if i in empty_header_indices:
+                    continue
+
+                # Section headers deduplicated by title; pages deduplicated by URL
+                # This allows a page to have the same title as a section header
+                if url is None:
+                    if title in seen_section_headers:
+                        continue
+                    seen_section_headers.add(title)
+                else:
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                # Use depth for indentation (2 spaces per level)
+                depth = page.get("depth", 0)
+                indent = "  " * depth
+                # Section headers (no URL) shown as bold text, pages as links
+                if url is None:
+                    markdown_parts.append(f"{indent}**{title}**")
+                else:
+                    markdown_parts.append(f"{indent}- [{title}](#{slugify(title)})")
                     # Extract h2 headings from content for sub-items
                     if include_h2 and page.get("content"):
                         h2_headings = re.findall(r'^## (.+)$', page["content"], re.MULTILINE)
+                        current_section_depth = 0  # Track depth based on numbered sections
                         for h2 in h2_headings:
                             h2_clean = h2.strip()
                             if h2_clean:
-                                markdown_parts.append(f"  - [{h2_clean}](#{slugify(h2_clean)})")
+                                # Determine depth from numbered prefix (e.g., "1" = depth 1, "1.1" = depth 2)
+                                number_match = re.match(r'^(\d+(?:\.\d+)*)\s', h2_clean)
+                                if number_match:
+                                    number_parts = number_match.group(1).split('.')
+                                    h2_depth = len(number_parts)  # "1" = 1, "1.1" = 2, "1.1.1" = 3
+                                    current_section_depth = h2_depth
+                                else:
+                                    # Non-numbered heading: nest under current section
+                                    h2_depth = current_section_depth + 1
+                                h2_indent = "  " * h2_depth
+                                markdown_parts.append(f"{h2_indent}- [{h2_clean}](#{slugify(h2_clean)})")
 
         markdown_parts.append("\n---\n")
 
@@ -654,9 +1118,18 @@ class GitbookDownloader:
 
             for extractor in self.extractors:
                 if extractor.can_handle(soup):
-                    # Set global nav flag for Mintlify sites
+                    # Set flags based on extractor type:
+                    # - has_global_nav: sidebar is identical on all pages (skip re-extraction)
+                    # - nav_preserves_order: navigation order should be used for TOC sorting
                     if isinstance(extractor, MintlifyExtractor):
                         self.has_global_nav = True
+                        self.nav_preserves_order = True
+                    elif isinstance(extractor, (DocusaurusExtractor, ModernGitBookExtractor)):
+                        # These extractors produce reliable nav ordering
+                        self.nav_preserves_order = True
+                    elif isinstance(extractor, VocsExtractor):
+                        # VocsExtractor: check if sections are collapsed first before setting flag
+                        pass  # Will be set below if nav is complete
                     nav_links = extractor.extract(soup, self.base_url, processed_urls)
                     if nav_links:
                         # For Vocs sites with collapsed sections, also extract content links
@@ -664,7 +1137,32 @@ class GitbookDownloader:
                         if isinstance(extractor, VocsExtractor):
                             # Check if we have actual page URLs (not just section headers)
                             actual_pages = [link for link in nav_links if link[0] is not None]
-                            if len(actual_pages) < 5:  # Few visible pages, sections likely collapsed
+                            section_headers = [link for link in nav_links if link[0] is None]
+                            # If there are section headers but few pages, sections are likely collapsed
+                            if section_headers and len(actual_pages) <= len(section_headers) + 3:
+                                # Don't trust nav order when using fallback - use URL-based sorting
+                                self.nav_preserves_order = False
+                                # Mark nav as sparse so subnav extraction filters section headers
+                                # (sub-pages have expanded sections with local depths that don't match global structure)
+                                self.sparse_nav = True
+                                fallback = FallbackExtractor()
+                                content_links = fallback.extract(soup, self.base_url, processed_urls)
+                                # Bump fallback depths by 1 since section headers are at depth 0
+                                # and fallback items should nest under them
+                                adjusted_links = [(url, title, depth + 1) for url, title, depth in content_links]
+                                nav_links.extend(adjusted_links)
+                            else:
+                                # Nav is complete, preserve order
+                                self.nav_preserves_order = True
+
+                        # For Modern GitBook sites with client-rendered nav, also extract content links
+                        # to find pages not visible in the static sidebar
+                        if isinstance(extractor, ModernGitBookExtractor):
+                            actual_pages = [link for link in nav_links if link[0] is not None]
+                            # If we found fewer than 10 actual pages, supplement with content links
+                            if len(actual_pages) < 10:
+                                # Don't trust nav order when using fallback - use URL-based sorting
+                                self.nav_preserves_order = False
                                 fallback = FallbackExtractor()
                                 content_links = fallback.extract(soup, self.base_url, processed_urls)
                                 nav_links.extend(content_links)
