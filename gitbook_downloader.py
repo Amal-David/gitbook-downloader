@@ -18,6 +18,12 @@ from slugify import slugify
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Regex to match version path segments (e.g., /v1/, /nightly/, /beta/)
+VERSION_PATH_PATTERN = re.compile(
+    r'/(?:v\d+(?:\.\d+)*|nightly|canary|next|latest|testnet|stable|beta|alpha|rc\d*|dev|staging|main|master|trunk|edge|unstable)(?:/|$)',
+    re.IGNORECASE
+)
+
 
 def normalize_url(href: str, base_url: str) -> Optional[str]:
     """Convert href to full URL, strip fragments, normalize slashes.
@@ -48,20 +54,13 @@ def is_different_version_path(url: str, base_url: str) -> bool:
 
     This prevents crawling multiple versions of the same docs which causes duplicates.
     """
-    # Common version path patterns in documentation sites
-    version_patterns = ["/nightly/", "/canary/", "/next/", "/latest/", "/testnet/"]
-
     base_path = urlparse(base_url).path
     url_path = urlparse(url).path
 
-    for pattern in version_patterns:
-        url_has_pattern = pattern in url_path
-        base_has_pattern = pattern in base_path
-        # Skip if URL has version pattern but base doesn't (or vice versa)
-        if url_has_pattern != base_has_pattern:
-            return True
+    url_has_version = bool(VERSION_PATH_PATTERN.search(url_path))
+    base_has_version = bool(VERSION_PATH_PATTERN.search(base_path))
 
-    return False
+    return url_has_version != base_has_version
 
 
 def is_different_doc_section(url: str, base_url: str) -> bool:
