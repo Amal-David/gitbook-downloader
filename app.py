@@ -9,7 +9,14 @@ import concurrent.futures
 import sys
 from urllib.parse import quote, unquote
 from urllib.parse import urlparse
-from win10toast import ToastNotifier
+
+ToastNotifier = None
+if sys.platform.startswith("win"):
+    try:
+        from win10toast import ToastNotifier as _ToastNotifier
+        ToastNotifier = _ToastNotifier
+    except ImportError:
+        ToastNotifier = None
 
 # Configure logging
 logging.basicConfig(
@@ -28,8 +35,8 @@ app = Flask(__name__)
 active_downloads = {}
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
 
-# Windows toast notifier
-toaster = ToastNotifier()
+# Windows toast notifier (optional)
+toaster = ToastNotifier() if ToastNotifier else None
 
 @app.errorhandler(404)
 def not_found_error(error):
@@ -78,7 +85,7 @@ def download_task(url, task_id, enable_notification=False):
         downloader.status.output_file = filename
         
         # Show Windows notification if enabled
-        if enable_notification:
+        if enable_notification and toaster:
             try:
                 toaster.show_toast(
                     "Download Completed",
@@ -98,7 +105,7 @@ def download_task(url, task_id, enable_notification=False):
             active_downloads[task_id].status.error = str(e)
             
             # Show error notification if enabled
-            if enable_notification:
+            if enable_notification and toaster:
                 try:
                     toaster.show_toast(
                         "Download Failed",
