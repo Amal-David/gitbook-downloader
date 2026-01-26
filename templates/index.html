@@ -95,6 +95,12 @@
                                 <input type="url" class="form-control" id="url" name="url" required 
                                        placeholder="https://docs.example.com">
                             </div>
+                            <div class="mb-3 form-check">
+                                <input type="checkbox" class="form-check-input" id="enable-notification" name="enable-notification">
+                                <label class="form-check-label" for="enable-notification">
+                                    Enable download notification
+                                </label>
+                            </div>
                             <button type="submit" class="btn btn-primary w-100">
                                 Download Documentation
                             </button>
@@ -167,6 +173,9 @@
                 return;
             }
 
+            // Get notification preference
+            const enableNotification = document.getElementById('enable-notification').checked;
+
             // Reset UI
             document.getElementById('progress-container').classList.remove('hidden');
             document.getElementById('error-container').classList.add('hidden');
@@ -182,7 +191,10 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ url })
+                    body: JSON.stringify({ 
+                        url,
+                        enable_notification: enableNotification
+                    })
                 });
 
                 const data = await handleResponse(response);

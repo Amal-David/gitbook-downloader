@@ -9,6 +9,7 @@ import concurrent.futures
 import sys
 from urllib.parse import quote, unquote
 from urllib.parse import urlparse
+from win10toast import ToastNotifier
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +28,9 @@ app = Flask(__name__)
 active_downloads = {}
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
 
+# Windows toast notifier
+toaster = ToastNotifier()
+
 @app.errorhandler(404)
 def not_found_error(error):
     logger.error("Resource not found")
@@ -42,7 +46,7 @@ def handle_exception(error):
     logger.error(f"Error: {str(error)}")
     return jsonify({"error": str(error)}), 500
 
-def download_task(url, task_id):
+def download_task(url, task_id, enable_notification=False):
     """Background task to download content"""
     try:
         logger.info(f"Starting download task for {url}")
@@ -73,11 +77,39 @@ def download_task(url, task_id):
         downloader.status.current_url = filename
         downloader.status.output_file = filename
         
+        # Show Windows notification if enabled
+        if enable_notification:
+            try:
+                toaster.show_toast(
+                    "Download Completed",
+                    f"Documentation successfully downloaded: {url}",
+                    duration=10,
+                    icon_path=None,
+                    threaded=True
+                )
+                logger.info("Windows notification shown")
+            except Exception as e:
+                logger.error(f"Failed to show notification: {str(e)}")
+        
     except Exception as e:
         logger.error(f"Error in download task: {str(e)}")
         if task_id in active_downloads:
             active_downloads[task_id].status.status = 'error'
             active_downloads[task_id].status.error = str(e)
+            
+            # Show error notification if enabled
+            if enable_notification:
+                try:
+                    toaster.show_toast(
+                        "Download Failed",
+                        f"Download error: {str(e)}",
+                        duration=10,
+                        icon_path=None,
+                        threaded=True
+                    )
+                    logger.info("Error notification shown")
+                except Exception as notify_error:
+                    logger.error(f"Failed to show error notification: {str(notify_error)}")
 
 @app.route('/')
 def index():
@@ -100,7 +132,8 @@ def start_download():
             return jsonify({"error": "Please provide a URL"}), 400
             
         url = data['url']
-        logger.info(f"Starting download for URL: {url}")
+        enable_notification = data.get('enable_notification', False)
+        logger.info(f"Starting download for URL: {url}, notification: {enable_notification}")
         
         # Use the URL directly as the task ID
         task_id = url
@@ -116,7 +149,7 @@ def start_download():
         # Start new download in background
         thread = threading.Thread(
             target=download_task,
-            args=(url, task_id)
+            args=(url, task_id, enable_notification)
         )
         thread.daemon = True
         thread.start()
@@ -144,7 +177,7 @@ def get_status(task_id):
         status_data = {
             "status": downloader.status.status,
             "current_page": downloader.status.current_page,
-            "total_pages": downloader.status.total_pages,
+            "total_pages": downloader.status.top_level_pages, 
             "current_url": downloader.status.current_url,
             "pages_scraped": downloader.status.pages_scraped,
             "error": getattr(downloader.status, "error", None),
