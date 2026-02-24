@@ -700,9 +700,21 @@ class GitbookDownloader:
                 else:
                     self.status.top_level_pages = len(nav_links) + 1  # +1 for main page
                     # Process main page
-                    main_page = await self._process_page_content(
-                        self.base_url, initial_content
-                    )
+                    if self.native_md:
+                        md_url = self.base_url.rstrip("/") + ".md"
+                        md_text = await self._fetch_page(md_url)
+                        main_page = {"title": None, "content": md_text, "url": self.base_url.rstrip("/")} if md_text else None
+                        if main_page:
+                            # Extract title from first h1 in markdown as fallback
+                            first_line = md_text.splitlines()[0] if md_text else ""
+                            if first_line.startswith("# "):
+                                main_page["title"] = first_line[2:].strip()
+                            else:
+                                main_page["title"] = urlparse(self.base_url).path.rstrip("/").split("/")[-1] or "Introduction"
+                    else:
+                        main_page = await self._process_page_content(
+                            self.base_url, initial_content
+                        )
                     if main_page:
                         self.pages[0] = {"index": 0, "depth": 0, **main_page}
                         self.status.pages_scraped.append(main_page["title"])
